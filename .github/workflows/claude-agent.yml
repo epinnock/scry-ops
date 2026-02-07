@@ -111,3 +111,4 @@ jobs:
             ${{ steps.dirs.outputs.add_dirs }}
             --max-turns 25
             --model claude-sonnet-4-5-20250929
+            --allowedTools "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
