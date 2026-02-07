@@ -89,3 +89,10 @@ Dashboard ← reads build history from Firestore
 - Always run tests before finalizing changes
 - Respect each service's own CLAUDE.md if present
 - When making cross-service changes, ensure API contracts remain compatible
+
+## CRITICAL: Git Workflow
+- **DO NOT** run `git commit` or `git push` inside `services/` directories
+- **DO NOT** push directly to any service repo
+- Only edit files — a post-step will handle committing and creating PRs in the correct repos
+- You may run `git status` or `git diff` to verify your changes
+- After making all edits, just confirm what you changed — do not attempt to commit or push
