@@ -109,6 +109,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             ${{ steps.dirs.outputs.add_dirs }}
-            --max-turns 25
+            --max-turns 50
             --model claude-sonnet-4-5-20250929
             --allowedTools "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
