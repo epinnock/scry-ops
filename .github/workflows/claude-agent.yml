@@ -1,0 +1,113 @@
+name: Claude Agent
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'claude')) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Conditional cross-repo checkouts based on labels ---
+
+      - name: Checkout upload-service
+        if: contains(github.event.issue.labels.*.name, 'upload-service')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-storybook-upload-service
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-storybook-upload-service
+
+      - name: Checkout cdn-service
+        if: contains(github.event.issue.labels.*.name, 'cdn-service')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-cdn-service
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-cdn-service
+
+      - name: Checkout dashboard
+        if: contains(github.event.issue.labels.*.name, 'dashboard')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-developer-dashboard
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-developer-dashboard
+
+      - name: Checkout scry-node
+        if: contains(github.event.issue.labels.*.name, 'scry-node')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-node
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-node
+
+      - name: Checkout sbcov
+        if: contains(github.event.issue.labels.*.name, 'sbcov')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-sbcov
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-sbcov
+
+      - name: Checkout search-api
+        if: contains(github.event.issue.labels.*.name, 'search-api')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-nextjs
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-nextjs
+
+      - name: Checkout landing-page
+        if: contains(github.event.issue.labels.*.name, 'landing-page')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-landing-page
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-landing-page
+
+      - name: Checkout scry-link
+        if: contains(github.event.issue.labels.*.name, 'scry-link')
+        uses: actions/checkout@v4
+        with:
+          repository: epinnock/scry-link
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: services/scry-link
+
+      # --- Build --add-dir flags for all checked out services ---
+
+      - name: Build add-dir args
+        id: dirs
+        run: |
+          ARGS=""
+          for dir in services/*/; do
+            if [ -d "$dir" ]; then
+              ARGS="$ARGS --add-dir ${{ github.workspace }}/$dir"
+            fi
+          done
+          echo "add_dirs=$ARGS" >> "$GITHUB_OUTPUT"
+          echo "Checked out services: $(ls services/ 2>/dev/null || echo 'none')"
+
+      # --- Run Claude ---
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            ${{ steps.dirs.outputs.add_dirs }}
+            --max-turns 25
+            --model claude-sonnet-4-5-20250929

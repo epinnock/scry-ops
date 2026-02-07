@@ -1,0 +1,73 @@
+services:
+  scry-storybook-upload-service:
+    repo: epinnock/scry-storybook-upload-service
+    label: upload-service
+    description: Backend API for Storybook uploads
+    stack: [typescript, hono, cloudflare-workers]
+    depends_on: [r2, firestore]
+
+  scry-cdn-service:
+    repo: epinnock/scry-cdn-service
+    label: cdn-service
+    description: CDN for serving deployed Storybooks
+    stack: [typescript, hono, cloudflare-workers]
+    depends_on: [r2, firestore, kv]
+
+  scry-developer-dashboard:
+    repo: epinnock/scry-developer-dashboard
+    label: dashboard
+    description: Web dashboard for project management
+    stack: [nextjs, typescript, firebase]
+    depends_on: [firestore, firebase-auth]
+
+  scry-node:
+    repo: epinnock/scry-node
+    label: scry-node
+    description: CLI tool for deploying Storybooks
+    stack: [nodejs, javascript]
+    depends_on: [upload-service]
+
+  scry-sbcov:
+    repo: epinnock/scry-sbcov
+    label: sbcov
+    description: Storybook coverage analysis tool
+    stack: [nodejs, typescript]
+    depends_on: []
+
+  scry-nextjs:
+    repo: epinnock/scry-nextjs
+    label: search-api
+    description: Multimodal search API for components
+    stack: [nextjs, typescript, milvus]
+    depends_on: [r2]
+
+  scry-landing-page:
+    repo: epinnock/scry-landing-page
+    label: landing-page
+    description: Marketing landing page
+    stack: [typescript]
+    depends_on: []
+
+  scry-link:
+    repo: epinnock/scry-link
+    label: scry-link
+    description: Figma plugin for linking components to stories
+    stack: [typescript]
+    depends_on: []
+
+infrastructure:
+  r2:
+    provider: cloudflare
+    description: S3-compatible object storage for Storybook ZIPs
+
+  firestore:
+    provider: google
+    description: Metadata storage for builds, projects, API keys
+
+  kv:
+    provider: cloudflare
+    description: Edge caching layer (24hr TTL)
+
+  firebase-auth:
+    provider: google
+    description: Authentication (GitHub OAuth)
