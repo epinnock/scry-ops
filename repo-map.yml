@@ -7,7 +7,7 @@ services:
     depends_on: [r2, firestore]
 
   scry-cdn-service:
-    repo: epinnock/scry-cdn-service
+    repo: epinnock/scry-remote-viewer
     label: cdn-service
     description: CDN for serving deployed Storybooks
     stack: [typescript, hono, cloudflare-workers]

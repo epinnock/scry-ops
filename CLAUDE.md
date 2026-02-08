@@ -90,6 +90,26 @@ Dashboard ← reads build history from Firestore
 - Respect each service's own CLAUDE.md if present
 - When making cross-service changes, ensure API contracts remain compatible
 
+## Cross-Service Features
+
+When multiple services are checked out, follow this workflow:
+
+1. **Survey first**: Read the relevant files in ALL checked-out services before editing anything
+2. **Identify shared interfaces**: Look for shared API contracts, Firestore collections, R2 path patterns, and type definitions that span services
+3. **Order of changes**: Modify upstream/shared services first (upload-service, then cdn-service, then dashboard)
+4. **Contract compatibility**: When changing an API endpoint or data shape, verify both the producer and consumer sides
+5. **Test each service**: Run `npm install && npm test` in each modified service directory
+6. **Describe all changes**: In your final summary, list what changed in each service and how they relate
+
+### Service Dependency Order
+When making coordinated changes, prefer this order:
+1. scry-storybook-upload-service (data producer)
+2. scry-cdn-service (data consumer)
+3. scry-developer-dashboard (UI consumer)
+4. scry-node (CLI client)
+5. scry-sbcov (analysis tool)
+6. scry-nextjs (search API)
+
 ## CRITICAL: Git Workflow
 - **DO NOT** run `git commit` or `git push` inside `services/` directories
 - **DO NOT** push directly to any service repo

@@ -1,0 +1,55 @@
+name: Cross-Service Feature
+description: A feature requiring changes across multiple Scry services
+labels: ["claude"]
+body:
+  - type: input
+    id: title
+    attributes:
+      label: Feature Title
+      placeholder: e.g., Add health check endpoint across services
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to change and why
+      placeholder: Describe the feature and the motivation behind it
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: services
+    attributes:
+      label: Affected Services
+      description: Select all services that need changes (dependency labels are auto-added)
+      options:
+        - label: "upload-service"
+        - label: "cdn-service"
+        - label: "dashboard"
+        - label: "scry-node"
+        - label: "sbcov"
+        - label: "search-api"
+        - label: "landing-page"
+        - label: "scry-link"
+
+  - type: textarea
+    id: shared-interfaces
+    attributes:
+      label: Shared Interface Changes
+      description: API contracts, Firestore schemas, R2 paths, or data formats that span services
+      placeholder: |
+        e.g.,
+        - New field `healthStatus` on Firestore `builds` collection
+        - New endpoint GET /health on upload-service and cdn-service
+
+  - type: textarea
+    id: per-service
+    attributes:
+      label: Per-Service Changes
+      description: Expected changes in each affected service
+      placeholder: |
+        e.g.,
+        - upload-service: Add GET /health endpoint returning uptime and R2 connectivity
+        - cdn-service: Add GET /health endpoint returning uptime and KV connectivity

@@ -19,8 +19,92 @@ jobs:
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
 
+    env:
+      PROJECT_NUMBER: "1"  # Update after creating the project
+      PROJECT_OWNER: "epinnock"
+
     steps:
       - uses: actions/checkout@v4
+
+      # --- Move issue to "In Progress" on the project board ---
+
+      - name: Move issue to In Progress
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        continue-on-error: true
+        run: |
+          # Get project and Status field metadata
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Status") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" 2>/dev/null) || exit 0
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.options[] | select(.name == "In Progress") | .id')
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+          [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ] && exit 0
+
+          # Ensure issue is on the project
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          # Set status to In Progress
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID" 2>/dev/null || true
+
+          echo "Moved issue #${{ github.event.issue.number }} to In Progress"
+
+      # --- Auto-add dependency labels from repo-map.yml ---
+
+      - name: Auto-add dependency labels
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Read current labels
+          LABELS=$(gh issue view "$ISSUE_NUMBER" --repo epinnock/scry-ops --json labels --jq '.labels[].name')
+
+          # Service-to-service dependencies (derived from repo-map.yml depends_on)
+          # scry-node depends on upload-service
+          if echo "$LABELS" | grep -q "scry-node"; then
+            gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "upload-service" 2>/dev/null || true
+          fi
+          # cdn-service depends on upload-service (shared R2 + Firestore contracts)
+          if echo "$LABELS" | grep -q "cdn-service"; then
+            gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "upload-service" 2>/dev/null || true
+          fi
+          # dashboard depends on upload-service (shared Firestore schemas)
+          if echo "$LABELS" | grep -q "dashboard"; then
+            gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "upload-service" 2>/dev/null || true
+          fi
+
+          # Re-read labels after auto-additions for downstream steps
+          echo "Final labels:"
+          gh issue view "$ISSUE_NUMBER" --repo epinnock/scry-ops --json labels --jq '.labels[].name'
 
       # --- Conditional cross-repo checkouts based on labels ---
 
@@ -36,7 +120,7 @@ jobs:
         if: contains(github.event.issue.labels.*.name, 'cdn-service')
         uses: actions/checkout@v4
         with:
-          repository: epinnock/scry-cdn-service
+          repository: epinnock/scry-remote-viewer
           token: ${{ secrets.CROSS_REPO_PAT }}
           path: services/scry-cdn-service
 
@@ -129,7 +213,7 @@ jobs:
 
           declare -A REPO_MAP
           REPO_MAP[scry-storybook-upload-service]="epinnock/scry-storybook-upload-service"
-          REPO_MAP[scry-cdn-service]="epinnock/scry-cdn-service"
+          REPO_MAP[scry-cdn-service]="epinnock/scry-remote-viewer"
           REPO_MAP[scry-developer-dashboard]="epinnock/scry-developer-dashboard"
           REPO_MAP[scry-node]="epinnock/scry-node"
           REPO_MAP[scry-sbcov]="epinnock/scry-sbcov"
@@ -137,7 +221,9 @@ jobs:
           REPO_MAP[scry-landing-page]="epinnock/scry-landing-page"
           REPO_MAP[scry-link]="epinnock/scry-link"
 
-          PR_LINKS=""
+          # --- Pass 1: Push all branches, collect services with changes ---
+          declare -A PUSHED_BRANCHES  # service_name -> branch_name
+          declare -A PUSHED_REPOS     # service_name -> target_repo
 
           for dir in services/*/; do
             [ ! -d "$dir" ] && continue
@@ -163,20 +249,113 @@ jobs:
             git commit -m "${ISSUE_TITLE} - Automated by scry-ops#${ISSUE_NUMBER}"
             git push origin "$BRANCH"
 
-            PR_URL=$(gh pr create \
-              --repo "$target_repo" \
-              --head "$BRANCH" \
-              --title "${ISSUE_TITLE}" \
-              --body "Automated changes from [scry-ops#${ISSUE_NUMBER}](https://github.com/epinnock/scry-ops/issues/${ISSUE_NUMBER}). Generated by Claude Code." \
-              2>&1) || true
-
-            echo "Result: $PR_URL"
-            PR_LINKS="${PR_LINKS}- **${service_name}**: ${PR_URL}\n"
+            PUSHED_BRANCHES[$service_name]="$BRANCH"
+            PUSHED_REPOS[$service_name]="$target_repo"
 
             cd "${{ github.workspace }}"
           done
 
+          # --- Pass 2: Create PRs with sibling cross-references ---
+          CHANGED_SERVICES=("${!PUSHED_BRANCHES[@]}")
+          MULTI_SERVICE=$(( ${#CHANGED_SERVICES[@]} > 1 ? 1 : 0 ))
+
+          PR_LINKS=""
+
+          for service_name in "${CHANGED_SERVICES[@]}"; do
+            target_repo="${PUSHED_REPOS[$service_name]}"
+            branch="${PUSHED_BRANCHES[$service_name]}"
+
+            # Build PR body
+            PR_BODY="Automated changes from [scry-ops#${ISSUE_NUMBER}](https://github.com/epinnock/scry-ops/issues/${ISSUE_NUMBER})."
+
+            if [ "$MULTI_SERVICE" -eq 1 ]; then
+              PR_BODY="${PR_BODY}
+
+          ## Related PRs
+
+          This is part of a cross-service change from scry-ops#${ISSUE_NUMBER}. Sibling PRs:"
+              for sibling in "${CHANGED_SERVICES[@]}"; do
+                sibling_repo="${PUSHED_REPOS[$sibling]}"
+                if [ "$sibling" != "$service_name" ]; then
+                  PR_BODY="${PR_BODY}
+          - **${sibling}**: \`${sibling_repo}\` (branch: \`${branch}\`)"
+                fi
+              done
+            fi
+
+            PR_BODY="${PR_BODY}
+
+          ---
+          Generated by Claude Code."
+
+            PR_URL=$(gh pr create \
+              --repo "$target_repo" \
+              --head "$branch" \
+              --title "${ISSUE_TITLE}" \
+              --body "$PR_BODY" \
+              2>&1) || true
+
+            echo "Result: $PR_URL"
+            PR_LINKS="${PR_LINKS}- **${service_name}**: ${PR_URL}\n"
+          done
+
+          # --- Comment on the orchestrator issue with all PR links ---
           if [ -n "$PR_LINKS" ]; then
-            printf "### PRs created in source repos\n\n${PR_LINKS}" | \
+            COMMENT_BODY="### PRs created in source repos\n\n${PR_LINKS}"
+            if [ "$MULTI_SERVICE" -eq 1 ]; then
+              COMMENT_BODY="${COMMENT_BODY}\n> Cross-service change: ${#CHANGED_SERVICES[@]} repos modified. Review all PRs together."
+            fi
+            printf "$COMMENT_BODY" | \
               gh issue comment "$ISSUE_NUMBER" --repo epinnock/scry-ops --body-file -
           fi
+
+      # --- Move issue to "In Review" after PRs are created ---
+
+      - name: Move issue to In Review
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        continue-on-error: true
+        run: |
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Status") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" 2>/dev/null) || exit 0
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.options[] | select(.name == "In Review") | .id')
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+          [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ] && exit 0
+
+          # Get the item ID (issue should already be on the project from earlier step)
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID" 2>/dev/null || true
+
+          echo "Moved issue #${{ github.event.issue.number }} to In Review"
