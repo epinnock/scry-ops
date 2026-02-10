@@ -120,7 +120,7 @@ jobs:
         if: contains(github.event.issue.labels.*.name, 'cdn-service')
         uses: actions/checkout@v4
         with:
-          repository: epinnock/scry-remote-viewer
+          repository: epinnock/scry-cdn-service
           token: ${{ secrets.CROSS_REPO_PAT }}
           path: services/scry-cdn-service
 
@@ -192,11 +192,11 @@ jobs:
         id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-4-5-20250929
+          allowed_tools: "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
           claude_args: |
             ${{ steps.dirs.outputs.add_dirs }}
             --max-turns 50
-            --model claude-sonnet-4-5-20250929
-            --allowedTools "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
 
       # --- Push changes back to source repos ---
 
@@ -213,7 +213,7 @@ jobs:
 
           declare -A REPO_MAP
           REPO_MAP[scry-storybook-upload-service]="epinnock/scry-storybook-upload-service"
-          REPO_MAP[scry-cdn-service]="epinnock/scry-remote-viewer"
+          REPO_MAP[scry-cdn-service]="epinnock/scry-cdn-service"
           REPO_MAP[scry-developer-dashboard]="epinnock/scry-developer-dashboard"
           REPO_MAP[scry-node]="epinnock/scry-node"
           REPO_MAP[scry-sbcov]="epinnock/scry-sbcov"
