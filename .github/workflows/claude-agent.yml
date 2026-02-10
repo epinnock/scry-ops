@@ -188,7 +188,7 @@ jobs:
 
       # --- Run Claude ---
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@01e756b34ef7a1447e9508f674143b07d20c2631 # v1.0.39 - last working version before SDK 0.2.27 broke OAuth
         id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
