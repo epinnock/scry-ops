@@ -52,6 +52,7 @@ Go to project **Settings** (gear icon) → **Custom fields** → **New field**:
 ### Service (Single select)
 
 Options — use the exact same names as the repo labels:
+- `scry-ops`
 - `upload-service`
 - `cdn-service`
 - `dashboard`
@@ -61,6 +62,9 @@ Options — use the exact same names as the repo labels:
 - `landing-page`
 - `scry-link`
 - `infrastructure`
+
+Note: options matching `repo-map.yml` service labels are auto-synced by
+`.github/workflows/sync-service-metadata.yml` (best effort). Keep this list aligned.
 
 ### Type (Single select)
 
@@ -92,7 +96,7 @@ Go to project **Settings** → **Manage access** → **Link a repository**:
 
 - `epinnock/scry-ops`
 - `epinnock/scry-storybook-upload-service`
-- `epinnock/scry-remote-viewer`
+- `epinnock/scry-cdn-service`
 - `epinnock/scry-developer-dashboard`
 - `epinnock/scry-node`
 - `epinnock/scry-sbcov`

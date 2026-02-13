@@ -1,4 +1,11 @@
 services:
+  scry-ops:
+    repo: epinnock/scry-ops
+    label: scry-ops
+    description: Orchestrator workflows, plans, and automation scripts
+    stack: [github-actions, yaml, bash]
+    depends_on: []
+
   scry-storybook-upload-service:
     repo: epinnock/scry-storybook-upload-service
     label: upload-service
@@ -7,18 +14,18 @@ services:
     depends_on: [r2, firestore]
 
   scry-cdn-service:
-    repo: epinnock/scry-remote-viewer
+    repo: epinnock/scry-cdn-service
     label: cdn-service
     description: CDN for serving deployed Storybooks
     stack: [typescript, hono, cloudflare-workers]
-    depends_on: [r2, firestore, kv]
+    depends_on: [upload-service, r2, firestore, kv]
 
   scry-developer-dashboard:
     repo: epinnock/scry-developer-dashboard
     label: dashboard
     description: Web dashboard for project management
     stack: [nextjs, typescript, firebase]
-    depends_on: [firestore, firebase-auth]
+    depends_on: [upload-service, firestore, firebase-auth]
 
   scry-node:
     repo: epinnock/scry-node

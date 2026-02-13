@@ -60,10 +60,11 @@ jobs:
         run: |
           # Map issue labels to the Service custom field
           LABELS='${{ toJSON(github.event.issue.labels.*.name) }}'
+          SERVICE_LABELS=$(bash scripts/list-services.sh | awk -F'\t' '{print $3}')
 
           # Determine primary service from labels
           SERVICE=""
-          for label in upload-service cdn-service dashboard scry-node sbcov search-api landing-page scry-link; do
+          for label in $SERVICE_LABELS; do
             if echo "$LABELS" | grep -q "\"$label\""; then
               SERVICE="$label"
               break
@@ -76,6 +77,11 @@ jobs:
           fi
 
           echo "Setting Service field to: $SERVICE"
+
+          # Ensure the Service option exists before setting it on the project item.
+          if ! bash scripts/sync-service-metadata.sh --project-only --service "$SERVICE"; then
+            echo "Warning: failed to sync project option for '$SERVICE'; proceeding with existing options."
+          fi
 
           # Get project ID and field ID
           PROJECT_DATA=$(gh api graphql -f query='

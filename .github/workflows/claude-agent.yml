@@ -1,4 +1,4 @@
-name: Claude Agent
+name: AI Agent
 
 on:
   issues:
@@ -13,15 +13,23 @@ permissions:
   id-token: write
 
 jobs:
-  claude:
+  agent:
     if: |
-      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'claude')) ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude'))
+      (github.event_name == 'issues' && (
+        contains(github.event.issue.labels.*.name, 'claude') ||
+        contains(github.event.issue.labels.*.name, 'codex')
+      )) ||
+      (github.event_name == 'issue_comment' && (
+        contains(github.event.comment.body, '@claude') ||
+        contains(github.event.comment.body, '@codex')
+      ))
     runs-on: ubuntu-latest
 
     env:
       PROJECT_NUMBER: "1"  # Update after creating the project
       PROJECT_OWNER: "epinnock"
+      DEFAULT_CODEX_MODEL: "codex-5.3"
+      DEFAULT_CLAUDE_MODEL: "claude-sonnet-4-5-20250929"
 
     steps:
       - uses: actions/checkout@v4
@@ -88,89 +96,50 @@ jobs:
           # Read current labels
           LABELS=$(gh issue view "$ISSUE_NUMBER" --repo epinnock/scry-ops --json labels --jq '.labels[].name')
 
-          # Service-to-service dependencies (derived from repo-map.yml depends_on)
-          # scry-node depends on upload-service
-          if echo "$LABELS" | grep -q "scry-node"; then
-            gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "upload-service" 2>/dev/null || true
-          fi
-          # cdn-service depends on upload-service (shared R2 + Firestore contracts)
-          if echo "$LABELS" | grep -q "cdn-service"; then
-            gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "upload-service" 2>/dev/null || true
-          fi
-          # dashboard depends on upload-service (shared Firestore schemas)
-          if echo "$LABELS" | grep -q "dashboard"; then
-            gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "upload-service" 2>/dev/null || true
-          fi
+          # Service-to-service dependency auto-labeling from repo-map.yml.
+          while IFS=$'\t' read -r service_label dependency_label; do
+            [ -z "$service_label" ] && continue
+            [ -z "$dependency_label" ] && continue
+            if echo "$LABELS" | grep -Fxq "$service_label"; then
+              echo "Adding dependency label: ${service_label} -> ${dependency_label}"
+              gh issue edit "$ISSUE_NUMBER" --repo epinnock/scry-ops --add-label "$dependency_label" 2>/dev/null || true
+            fi
+          done < <(bash scripts/list-service-dependencies.sh)
 
           # Re-read labels after auto-additions for downstream steps
           echo "Final labels:"
           gh issue view "$ISSUE_NUMBER" --repo epinnock/scry-ops --json labels --jq '.labels[].name'
 
-      # --- Conditional cross-repo checkouts based on labels ---
+      # --- Checkout labeled service repos dynamically from repo-map.yml ---
 
-      - name: Checkout upload-service
-        if: contains(github.event.issue.labels.*.name, 'upload-service')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-storybook-upload-service
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-storybook-upload-service
+      - name: Checkout labeled services
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          mkdir -p services
+          LABELS=$(gh issue view "$ISSUE_NUMBER" --repo epinnock/scry-ops --json labels --jq '.labels[].name')
 
-      - name: Checkout cdn-service
-        if: contains(github.event.issue.labels.*.name, 'cdn-service')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-cdn-service
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-cdn-service
+          while IFS=$'\t' read -r service_name repo label _description; do
+            [ -z "$service_name" ] && continue
+            [ -z "$repo" ] && continue
+            [ -z "$label" ] && continue
 
-      - name: Checkout dashboard
-        if: contains(github.event.issue.labels.*.name, 'dashboard')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-developer-dashboard
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-developer-dashboard
+            # scry-ops is already checked out as the workspace root.
+            if [ "$service_name" = "scry-ops" ]; then
+              continue
+            fi
 
-      - name: Checkout scry-node
-        if: contains(github.event.issue.labels.*.name, 'scry-node')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-node
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-node
-
-      - name: Checkout sbcov
-        if: contains(github.event.issue.labels.*.name, 'sbcov')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-sbcov
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-sbcov
-
-      - name: Checkout search-api
-        if: contains(github.event.issue.labels.*.name, 'search-api')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-nextjs
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-nextjs
-
-      - name: Checkout landing-page
-        if: contains(github.event.issue.labels.*.name, 'landing-page')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-landing-page
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-landing-page
-
-      - name: Checkout scry-link
-        if: contains(github.event.issue.labels.*.name, 'scry-link')
-        uses: actions/checkout@v4
-        with:
-          repository: epinnock/scry-link
-          token: ${{ secrets.CROSS_REPO_PAT }}
-          path: services/scry-link
+            if echo "$LABELS" | grep -Fxq "$label"; then
+              target_dir="services/${service_name}"
+              if [ -d "$target_dir/.git" ]; then
+                echo "Already checked out: $service_name"
+                continue
+              fi
+              echo "Checking out ${repo} -> ${target_dir}"
+              git clone "https://x-access-token:${GH_TOKEN}@github.com/${repo}.git" "$target_dir"
+            fi
+          done < <(bash scripts/list-services.sh)
 
       # --- Build --add-dir flags for all checked out services ---
 
@@ -186,13 +155,71 @@ jobs:
           echo "add_dirs=$ARGS" >> "$GITHUB_OUTPUT"
           echo "Checked out services: $(ls services/ 2>/dev/null || echo 'none')"
 
-      # --- Run Claude ---
+      # --- Select AI agent ---
 
-      - uses: anthropics/claude-code-action@v1
+      - name: Select AI agent
+        id: agent
+        env:
+          ISSUE_LABELS_JSON: ${{ toJSON(github.event.issue.labels.*.name) }}
+          COMMENT_BODY: ${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}
+        run: |
+          SELECTED_AGENT="codex"
+          AGENT_NAME="Codex"
+          BRANCH_PREFIX="codex"
+
+          if echo "$COMMENT_BODY" | grep -qi "@claude"; then
+            SELECTED_AGENT="claude"
+            AGENT_NAME="Claude Code"
+            BRANCH_PREFIX="claude"
+          elif echo "$COMMENT_BODY" | grep -qi "@codex"; then
+            SELECTED_AGENT="codex"
+            AGENT_NAME="Codex"
+            BRANCH_PREFIX="codex"
+          elif echo "$ISSUE_LABELS_JSON" | grep -q '"claude"'; then
+            SELECTED_AGENT="claude"
+            AGENT_NAME="Claude Code"
+            BRANCH_PREFIX="claude"
+          fi
+
+          echo "Selected agent: ${SELECTED_AGENT}"
+          echo "agent=${SELECTED_AGENT}" >> "$GITHUB_OUTPUT"
+          echo "agent_name=${AGENT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "branch_prefix=${BRANCH_PREFIX}" >> "$GITHUB_OUTPUT"
+
+      # --- Run Codex (default) ---
+
+      - name: Run Codex
+        if: steps.agent.outputs.agent == 'codex'
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ env.DEFAULT_CODEX_MODEL }}
+          sandbox: workspace-write
+          safety-strategy: drop-sudo
+          codex-args: --full-auto --max-turns 50
+          prompt: |
+            Work on scry-ops issue #${{ github.event.issue.number }}: ${{ github.event.issue.title }}.
+
+            Issue body:
+            ${{ github.event.issue.body }}
+
+            Labels:
+            ${{ join(github.event.issue.labels.*.name, ', ') }}
+
+            Service repos are checked out under ./services.
+            Follow scry-ops/CLAUDE.md and each checked-out service CLAUDE.md.
+            Do not run git commit or git push. This workflow handles commits and PR creation.
+
+      # --- Run Claude (opt-in via label/comment) ---
+
+      - name: Run Claude
+        if: steps.agent.outputs.agent == 'claude'
         id: claude
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: claude-sonnet-4-5-20250929
+          model: ${{ env.DEFAULT_CLAUDE_MODEL }}
           allowed_tools: "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
           claude_args: |
             ${{ steps.dirs.outputs.add_dirs }}
@@ -206,25 +233,48 @@ jobs:
           GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
+          AGENT_NAME: ${{ steps.agent.outputs.agent_name }}
+          BRANCH_PREFIX: ${{ steps.agent.outputs.branch_prefix }}
         shell: bash
         run: |
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
 
           declare -A REPO_MAP
-          REPO_MAP[scry-storybook-upload-service]="epinnock/scry-storybook-upload-service"
-          REPO_MAP[scry-cdn-service]="epinnock/scry-cdn-service"
-          REPO_MAP[scry-developer-dashboard]="epinnock/scry-developer-dashboard"
-          REPO_MAP[scry-node]="epinnock/scry-node"
-          REPO_MAP[scry-sbcov]="epinnock/scry-sbcov"
-          REPO_MAP[scry-nextjs]="epinnock/scry-nextjs"
-          REPO_MAP[scry-landing-page]="epinnock/scry-landing-page"
-          REPO_MAP[scry-link]="epinnock/scry-link"
+          while IFS=$'\t' read -r service_name repo _label _description; do
+            [ -z "$service_name" ] && continue
+            [ -z "$repo" ] && continue
+            REPO_MAP[$service_name]="$repo"
+          done < <(bash scripts/list-services.sh)
 
           # --- Pass 1: Push all branches, collect services with changes ---
           declare -A PUSHED_BRANCHES  # service_name -> branch_name
           declare -A PUSHED_REPOS     # service_name -> target_repo
 
+          # Handle root scry-ops changes separately (excluding checked-out service repos).
+          cd "${{ github.workspace }}"
+          ROOT_STATUS=$(git status --porcelain -- . ':(exclude)services')
+          if [ -n "$ROOT_STATUS" ]; then
+            echo "Changes detected in scry-ops root, pushing to epinnock/scry-ops"
+            BRANCH="${BRANCH_PREFIX}/scry-ops-issue-${ISSUE_NUMBER}"
+
+            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/epinnock/scry-ops.git"
+            git checkout -b "$BRANCH"
+            git add -A -- . ':(exclude)services'
+
+            if [ -n "$(git diff --cached --name-only)" ]; then
+              git commit -m "${ISSUE_TITLE} - Automated by scry-ops#${ISSUE_NUMBER}"
+              git push origin "$BRANCH"
+              PUSHED_BRANCHES[scry-ops]="$BRANCH"
+              PUSHED_REPOS[scry-ops]="epinnock/scry-ops"
+            else
+              echo "No committable scry-ops root changes after filtering, skipping"
+            fi
+          else
+            echo "No scry-ops root changes detected"
+          fi
+
+          # --- Pass 1b: Push service repo branches ---
           for dir in services/*/; do
             [ ! -d "$dir" ] && continue
             service_name=$(basename "$dir")
@@ -241,7 +291,7 @@ jobs:
 
             echo "Changes detected in $service_name, pushing to $target_repo"
 
-            BRANCH="claude/scry-ops-issue-${ISSUE_NUMBER}"
+            BRANCH="${BRANCH_PREFIX}/scry-ops-issue-${ISSUE_NUMBER}"
 
             git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${target_repo}.git"
             git checkout -b "$BRANCH"
@@ -286,7 +336,7 @@ jobs:
             PR_BODY="${PR_BODY}
 
           ---
-          Generated by Claude Code."
+          Generated by ${AGENT_NAME}."
 
             PR_URL=$(gh pr create \
               --repo "$target_repo" \

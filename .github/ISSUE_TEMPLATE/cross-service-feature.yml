@@ -1,7 +1,14 @@
 name: Cross-Service Feature
 description: A feature requiring changes across multiple Scry services
-labels: ["claude"]
+labels: ["codex"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Agent selection:
+        - Default: `codex` (Codex 5.3)
+        - Add the `claude` label to run Claude instead
+
   - type: input
     id: title
     attributes:
@@ -23,8 +30,9 @@ body:
     id: services
     attributes:
       label: Affected Services
-      description: Select all services that need changes (dependency labels are auto-added)
+      description: Select all services that need changes (dependency labels are auto-added). If a new service label is not listed yet, add it manually on the issue.
       options:
+        - label: "scry-ops"
         - label: "upload-service"
         - label: "cdn-service"
         - label: "dashboard"

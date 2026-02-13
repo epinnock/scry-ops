@@ -1,0 +1,33 @@
+name: Sync Service Metadata
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - repo-map.yml
+      - scripts/list-services.sh
+      - scripts/list-service-dependencies.sh
+      - scripts/sync-service-metadata.sh
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  PROJECT_OWNER: epinnock
+  PROJECT_NUMBER: "1"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync service labels and project field options
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+          OPS_REPO: epinnock/scry-ops
+          PROJECT_OWNER: ${{ env.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ env.PROJECT_NUMBER }}
+        run: |
+          bash scripts/sync-service-metadata.sh

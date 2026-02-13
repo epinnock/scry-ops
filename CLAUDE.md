@@ -5,6 +5,11 @@ All service repos are checked out under `./services/` when their label is applie
 
 ## Services
 
+### scry-ops (label: `scry-ops`)
+- **Purpose**: Orchestrator repo for cross-service automation
+- **Contains**: GitHub workflows, issue templates, repo mappings, plans, scripts
+- **Notes**: Edits here affect agent routing, project-sync behavior, and automation safety
+
 ### scry-storybook-upload-service (label: `upload-service`)
 - **Purpose**: Backend API for receiving and storing Storybook uploads
 - **Stack**: TypeScript, Hono framework, Cloudflare Workers

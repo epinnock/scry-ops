@@ -78,6 +78,13 @@ while IFS=',' read -r title project status start_date end_date result notes; do
 
   # Resolve labels
   LABELS=$(resolve_labels "$project")
+  # Default agent label so orchestrator workflow triggers.
+  if [[ -n "$LABELS" ]]; then
+    LABELS="${LABELS},codex"
+  else
+    LABELS="codex"
+  fi
+  LABELS=$(echo "$LABELS" | tr ',' '\n' | sort -u | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
 
   # Build issue body
   BODY="Migrated from backlog.csv"

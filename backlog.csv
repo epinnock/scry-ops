@@ -55,3 +55,5 @@ possibly split the figma scry library?,html-to-figma ,Pending,1/30,,this is all 
 create plan for integrating gh app for repo access,storybook-addon (new cloudflare worker),Pending,1/30,,don't want to expose the scry-figma source best to call from service ,
 create flow for creating new github issues from scry application,,,,,,
 create way to create ticket from figma app,,,,,,
+add scry-ops to the list of repos we can edit,scry-ops,Pending,2/13/2026,,,
+add a scripts to pull all the repos locally,scry-ops,Pending,2/13/2026,,,
