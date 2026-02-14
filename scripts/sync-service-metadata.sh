@@ -188,6 +188,7 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
                 id
                 name
                 color
+                description
               }
             }
           }
@@ -207,7 +208,7 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
     exit 1
   fi
 
-  OPTIONS_JSON="$(echo "${PROJECT_DATA}" | jq -c '[.data.user.projectV2.field.options[] | {id: .id, name: .name, color: (.color // "GRAY")}]')"
+  OPTIONS_JSON="$(echo "${PROJECT_DATA}" | jq -c '[.data.user.projectV2.field.options[] | {name: .name, color: (.color // "GRAY"), description: (.description // "")}]')"
   missing_count=0
 
   for label in "${SERVICE_LABELS[@]}"; do
@@ -215,7 +216,7 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
       log "Project option exists: ${label}"
       continue
     fi
-    OPTIONS_JSON="$(echo "${OPTIONS_JSON}" | jq -c --arg name "${label}" '. + [{id: null, name: $name, color: "GRAY"}]')"
+    OPTIONS_JSON="$(echo "${OPTIONS_JSON}" | jq -c --arg name "${label}" --arg description "Auto-synced from repo-map.yml (${name})" '. + [{name: $name, color: "GRAY", description: $description}]')"
     missing_count=$((missing_count + 1))
     log "Project option missing and queued: ${label}"
   done
@@ -232,13 +233,10 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
 
   OPTION_LITERAL="$(echo "${OPTIONS_JSON}" | jq -r '
     map(
-      (if (.id // "") != "" then
-        "{id: \"" + (.id | gsub("\\\\";"\\\\\\\\") | gsub("\""; "\\\"")) + "\", "
-      else
-        "{"
-      end) +
-      "name: \"" +
+      "{name: \"" +
       (.name | gsub("\\\\";"\\\\\\\\") | gsub("\""; "\\\"")) +
+      "\", description: \"" +
+      ((.description // "") | gsub("\\\\";"\\\\\\\\") | gsub("\""; "\\\"")) +
       "\", color: " + ((.color // "GRAY") | ascii_upcase) + "}"
     ) | join(", ")
   ')"
@@ -247,10 +245,8 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
   MUTATION="mutation {
     updateProjectV2Field(
       input: {
-        projectId: \"${PROJECT_ID}\"
         fieldId: \"${FIELD_ID}\"
         name: \"Service\"
-        dataType: SINGLE_SELECT
         singleSelectOptions: [${OPTION_LITERAL}]
       }
     ) {
