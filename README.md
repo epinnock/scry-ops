@@ -141,15 +141,148 @@ You can also run the sync manually with:
 - `bash scripts/sync-service-metadata.sh`
 - `bash scripts/sync-service-metadata.sh --service <label>`
 
-## Local Repo Sync
+## Automation Workflows and Scripts
 
-Use `scripts/pull-all-repos.sh` to clone/pull all Scry repos locally from one command.
+### Service Metadata Sync Workflow
 
-- Default run (uses parent dir of `scry-ops` as the workspace root):
-  - `bash scripts/pull-all-repos.sh`
-- Dry run:
-  - `bash scripts/pull-all-repos.sh --dry-run`
-- Custom workspace path:
-  - `bash scripts/pull-all-repos.sh --base-dir /path/to/workspace`
+**File**: `.github/workflows/sync-service-metadata.yml`
 
-The script skips dirty repos by default and prints a summary of pulled, cloned, skipped, and failed repos.
+Automatically syncs service labels and GitHub Project field options from `repo-map.yml` to ensure consistency between the repo map and GitHub's UI.
+
+**Triggers**:
+- Automatically on push when `repo-map.yml` or sync scripts are modified
+- Manually via `workflow_dispatch` in the Actions tab
+
+**What it does**:
+1. Reads service definitions from `repo-map.yml`
+2. Creates missing labels in the `epinnock/scry-ops` repository
+3. Adds missing service options to the GitHub Project "Service" field
+
+**Required secrets**: `CROSS_REPO_PAT` (GitHub PAT with repo and project access)
+
+### Service Metadata Sync Script
+
+**File**: `scripts/sync-service-metadata.sh`
+
+The underlying script that powers the sync workflow. Can be run locally or in CI.
+
+**Usage**:
+```bash
+# Sync all services
+bash scripts/sync-service-metadata.sh
+
+# Sync a specific service only
+bash scripts/sync-service-metadata.sh --service upload-service
+
+# Sync labels only (skip project field)
+bash scripts/sync-service-metadata.sh --labels-only
+
+# Sync project field only (skip labels)
+bash scripts/sync-service-metadata.sh --project-only
+
+# Dry run (preview changes without applying)
+bash scripts/sync-service-metadata.sh --dry-run
+```
+
+**Authentication**: Uses `GH_TOKEN`, `CROSS_REPO_PAT`, or `GITHUB_TOKEN` environment variables, or falls back to `gh` CLI auth session.
+
+**Environment variables**:
+- `OPS_REPO` — target repo for labels (default: `epinnock/scry-ops`)
+- `PROJECT_OWNER` — GitHub user/org owning the project (default: `epinnock`)
+- `PROJECT_NUMBER` — project number (default: `1`)
+- `LABEL_COLOR` — hex color for new labels (default: `0E8A16`)
+
+### List Services Script
+
+**File**: `scripts/list-services.sh`
+
+Parses `repo-map.yml` and outputs service metadata in tab-separated format.
+
+**Usage**:
+```bash
+# List all services
+bash scripts/list-services.sh
+
+# Use a custom repo-map file
+bash scripts/list-services.sh /path/to/repo-map.yml
+```
+
+**Output format**: `service_key <TAB> repo <TAB> label <TAB> description`
+
+**Example**:
+```
+scry-ops    epinnock/scry-ops    scry-ops    Orchestrator workflows, plans, and automation scripts
+upload-service    epinnock/scry-storybook-upload-service    upload-service    Backend API for Storybook uploads
+```
+
+This script is used by other automation scripts to parse the service registry.
+
+### List Service Dependencies Script
+
+**File**: `scripts/list-service-dependencies.sh`
+
+Parses `repo-map.yml` and outputs service dependencies based on the `depends_on` field.
+
+**Usage**:
+```bash
+# List all service dependencies
+bash scripts/list-service-dependencies.sh
+
+# Use a custom repo-map file
+bash scripts/list-service-dependencies.sh /path/to/repo-map.yml
+```
+
+**Output format**: `service_label <TAB> dependency_label`
+
+**Example**:
+```
+cdn-service    upload-service
+dashboard    upload-service
+scry-node    upload-service
+```
+
+Dependencies can be specified as either service keys (e.g., `upload-service`) or labels. The script resolves them to labels for consistency.
+
+This script is used by the `claude-agent.yml` workflow to automatically add dependency labels to issues.
+
+### Local Repo Sync Script
+
+**File**: `scripts/pull-all-repos.sh`
+
+Clone or pull all Scry service repos locally in one command. Useful for local development across multiple services.
+
+**Usage**:
+```bash
+# Default: clone/pull all repos to parent directory of scry-ops
+bash scripts/pull-all-repos.sh
+
+# Dry run to preview actions
+bash scripts/pull-all-repos.sh --dry-run
+
+# Use a custom workspace directory
+bash scripts/pull-all-repos.sh --base-dir /path/to/workspace
+
+# Pull/clone a specific branch in all repos
+bash scripts/pull-all-repos.sh --branch feature-branch
+
+# Allow pulling repos with uncommitted changes
+bash scripts/pull-all-repos.sh --allow-dirty
+```
+
+**Options**:
+- `--base-dir <path>` — directory where repos are cloned (default: parent of scry-ops)
+- `--branch <name>` — checkout/pull a specific branch in existing repos
+- `--skip-dirty` — skip repos with uncommitted changes (default)
+- `--allow-dirty` — attempt pull even with local changes
+- `--dry-run` — preview actions without making changes
+
+**Behavior**:
+- Clones missing repos
+- Pulls existing repos (fast-forward only)
+- Skips dirty repos by default to avoid conflicts
+- Prints a summary: pulled, cloned, skipped_dirty, failed
+
+**Example output**:
+```
+[pull-all-repos] Summary: pulled=8, cloned=1, skipped_dirty=0, failed=0
+```
