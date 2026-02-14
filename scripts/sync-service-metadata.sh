@@ -216,7 +216,7 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
       log "Project option exists: ${label}"
       continue
     fi
-    OPTIONS_JSON="$(echo "${OPTIONS_JSON}" | jq -c --arg name "${label}" --arg description "Auto-synced from repo-map.yml (${name})" '. + [{name: $name, color: "GRAY", description: $description}]')"
+    OPTIONS_JSON="$(echo "${OPTIONS_JSON}" | jq -c --arg name "${label}" --arg description "Auto-synced from repo-map.yml (${label})" '. + [{name: $name, color: "GRAY", description: $description}]')"
     missing_count=$((missing_count + 1))
     log "Project option missing and queued: ${label}"
   done
