@@ -207,7 +207,7 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
     exit 1
   fi
 
-  OPTIONS_JSON="$(echo "${PROJECT_DATA}" | jq -c '[.data.user.projectV2.field.options[] | {name: .name, color: (.color // "GRAY")}]')"
+  OPTIONS_JSON="$(echo "${PROJECT_DATA}" | jq -c '[.data.user.projectV2.field.options[] | {id: .id, name: .name, color: (.color // "GRAY")}]')"
   missing_count=0
 
   for label in "${SERVICE_LABELS[@]}"; do
@@ -215,7 +215,7 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
       log "Project option exists: ${label}"
       continue
     fi
-    OPTIONS_JSON="$(echo "${OPTIONS_JSON}" | jq -c --arg name "${label}" '. + [{name: $name, color: "GRAY"}]')"
+    OPTIONS_JSON="$(echo "${OPTIONS_JSON}" | jq -c --arg name "${label}" '. + [{id: null, name: $name, color: "GRAY"}]')"
     missing_count=$((missing_count + 1))
     log "Project option missing and queued: ${label}"
   done
@@ -232,7 +232,12 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
 
   OPTION_LITERAL="$(echo "${OPTIONS_JSON}" | jq -r '
     map(
-      "{name: \"" +
+      (if (.id // "") != "" then
+        "{id: \"" + (.id | gsub("\\\\";"\\\\\\\\") | gsub("\""; "\\\"")) + "\", "
+      else
+        "{"
+      end) +
+      "name: \"" +
       (.name | gsub("\\\\";"\\\\\\\\") | gsub("\""; "\\\"")) +
       "\", color: " + ((.color // "GRAY") | ascii_upcase) + "}"
     ) | join(", ")
@@ -259,11 +264,15 @@ if [[ "${SYNC_PROJECT}" == true ]]; then
     }
   }"
 
-  if gh api graphql -f query="${MUTATION}" >/dev/null 2>&1; then
-    log "Updated project Service options"
-  else
+  MUTATION_RESPONSE="$(gh api graphql -f query="${MUTATION}" 2>&1)" || {
     warn "Failed to update project Service options via updateProjectV2Field mutation"
+    warn "GraphQL/API response:"
+    warn "${MUTATION_RESPONSE}"
     warn "Verify token scopes and ProjectV2 mutation support, then retry."
     exit 1
+  }
+
+  if [[ -n "${MUTATION_RESPONSE}" ]]; then
+    log "Updated project Service options"
   fi
 fi
