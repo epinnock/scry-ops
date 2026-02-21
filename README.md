@@ -70,7 +70,7 @@ Each label maps to a service repo. Adding a label to an issue tells the workflow
 ## Agent Labels
 
 - `codex` — Runs Codex (default model: Codex 5.3)
-- `claude` — Runs Claude Code
+- `claude` — Runs Claude Code (default model: Claude Opus 4.6)
 - If both are present, `claude` takes precedence
 - `@codex` / `@claude` in an issue comment can also select the agent
 
