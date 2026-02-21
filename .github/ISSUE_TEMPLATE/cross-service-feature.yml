@@ -34,6 +34,7 @@ body:
       options:
         - label: "scry-ops"
         - label: "upload-service"
+        - label: "build-processing"
         - label: "cdn-service"
         - label: "dashboard"
         - label: "scry-node"
