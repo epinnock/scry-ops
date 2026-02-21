@@ -186,6 +186,15 @@ jobs:
           echo "agent_name=${AGENT_NAME}" >> "$GITHUB_OUTPUT"
           echo "branch_prefix=${BRANCH_PREFIX}" >> "$GITHUB_OUTPUT"
 
+      # --- Switch git remote to PAT so agents can push workflow files ---
+
+      - name: Configure git remote with PAT
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          echo "Git remote updated to use CROSS_REPO_PAT (includes workflow scope)"
+
       # --- Run Codex (default) ---
 
       - name: Run Codex
