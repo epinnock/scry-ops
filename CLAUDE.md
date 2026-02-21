@@ -59,6 +59,13 @@ All service repos are checked out under `./services/` when their label is applie
 - **Purpose**: Figma plugin linking components to Storybook stories
 - **Stack**: TypeScript
 
+### scry-build-processing-service (label: `build-processing`)
+- **Purpose**: Async pipeline that processes uploaded builds for search indexing
+- **Stack**: TypeScript, Hono, Cloudflare Workers, Cloudflare Queues
+- **Trigger**: Cloudflare Queue message from upload-service after build upload
+- **Pipeline**: ZIP extraction → LLM inspection (OpenAI) → searchable text → embeddings (Jina) → Milvus insertion
+- **Test**: `cd services/scry-build-processing-service && npm install && npm test`
+
 ## Key Interfaces
 
 ### Storage Pattern
@@ -77,10 +84,13 @@ All services share this R2 storage convention:
 ### Data Flow
 ```
 CLI (scry-node) → Upload Service → R2 (storage) + Firestore (metadata)
+                                        ↓ (Queue message)
+                  Build Processing Service → OpenAI + Jina → Milvus (vector DB)
                                         ↓
 CDN Service ← reads from R2 + Firestore
                                         ↓
 Dashboard ← reads build history from Firestore
+Search API ← queries Milvus for component search
 ```
 
 ### Environments
@@ -109,11 +119,12 @@ When multiple services are checked out, follow this workflow:
 ### Service Dependency Order
 When making coordinated changes, prefer this order:
 1. scry-storybook-upload-service (data producer)
-2. scry-cdn-service (data consumer)
-3. scry-developer-dashboard (UI consumer)
-4. scry-node (CLI client)
-5. scry-sbcov (analysis tool)
-6. scry-nextjs (search API)
+2. scry-build-processing-service (async processing)
+3. scry-cdn-service (data consumer)
+4. scry-developer-dashboard (UI consumer)
+5. scry-node (CLI client)
+6. scry-sbcov (analysis tool)
+7. scry-nextjs (search API)
 
 ## CRITICAL: Git Workflow
 - **DO NOT** run `git commit` or `git push` inside `services/` directories

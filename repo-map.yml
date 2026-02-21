@@ -62,6 +62,13 @@ services:
     stack: [typescript]
     depends_on: []
 
+  scry-build-processing-service:
+    repo: epinnock/scry-build-processing-service
+    label: build-processing
+    description: Async build processing pipeline (LOR, embeddings, vector DB)
+    stack: [typescript, hono, cloudflare-workers, cloudflare-queues]
+    depends_on: [upload-service, r2, firestore, milvus]
+
 infrastructure:
   r2:
     provider: cloudflare
@@ -78,3 +85,11 @@ infrastructure:
   firebase-auth:
     provider: google
     description: Authentication (GitHub OAuth)
+
+  milvus:
+    provider: zilliz
+    description: Vector database for component embeddings (Zilliz Cloud)
+
+  cloudflare-queues:
+    provider: cloudflare
+    description: Async message queue for build processing pipeline
