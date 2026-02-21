@@ -148,16 +148,20 @@ Upload completes → queued → processing → completed
 
 ## Milvus Vector Schema
 
+Field names must match what `scry-nextjs` queries against in `search-utils.ts`:
+
 | Field | Type | Description |
 |-------|------|-------------|
-| `primary_key` | VARCHAR | `{projectId}_{storyId}_{timestamp}` |
-| `text_dense` | FLOAT_VECTOR(2048) | Padded text embedding (1024 + 1024 zeros) |
-| `image_dense` | FLOAT_VECTOR(2048) | Padded image embedding (1024 + 1024 zeros) |
-| `text` | VARCHAR | Searchable text (LOR) |
+| `primary_key` | INT64 | `Date.now() + batchIndex` |
+| `text_embedding` | FLOAT_VECTOR(2048) | Padded text embedding (1024 + 1024 zeros) |
+| `image_embedding` | FLOAT_VECTOR(2048) | Padded image embedding (1024 + 1024 zeros) |
+| `searchable_text` | VARCHAR(65535) | Searchable text / LOR (Lexical Object Representation) |
 | `component_name` | VARCHAR | Component display name |
 | `project_id` | VARCHAR | Scry project ID |
 | `timestamp` | INT64 | Processing timestamp |
-| `json_content` | VARCHAR | Full inspection result as JSON |
+| `json_content` | JSON | Full inspection result + story metadata |
+
+**Field name note:** The original `vectorutils.cjs` schema definition uses `text_dense`, `image_dense`, and `text`, but `transformStoryData()` actually inserts with `text_embedding`, `image_embedding`, and `searchable_text` — and those are the names that `scry-nextjs/search-utils.ts` queries against. The processing service must use the query-side names.
 
 ---
 
@@ -325,6 +329,28 @@ Search API ← queries Milvus for component search
 | `epinnock/scry-build-processing-service` | [#1](https://github.com/epinnock/scry-build-processing-service/pull/1) | `feat/initial-build-processing-service` |
 | `epinnock/scry-storybook-upload-service` | [#16](https://github.com/epinnock/scry-storybook-upload-service/pull/16) | `feat/build-processing-queue-producer` |
 | `epinnock/scry-ops` | [#16](https://github.com/epinnock/scry-ops/pull/16) | `feat/register-build-processing-service` |
+
+---
+
+## Known Issues / Follow-ups
+
+### 1. Milvus field name mismatch in `vector-inserter.ts` (must fix before deploy)
+
+`scry-build-processing-service/src/pipeline/vector-inserter.ts` currently inserts with the wrong field names from the `vectorutils.cjs` schema definition side, not the query side that `scry-nextjs` uses.
+
+| Field | Current (wrong) | Required (matches scry-nextjs queries) |
+|-------|-----------------|----------------------------------------|
+| Text vector | `text_dense` | `text_embedding` |
+| Image vector | `image_dense` | `image_embedding` |
+| Searchable text | `text` | `searchable_text` |
+
+**Root cause:** `vectorutils.cjs` has an internal inconsistency — `setupCollection()` defines `text_dense`/`image_dense`/`text` but `transformStoryData()` inserts with `text_embedding`/`image_embedding`/`searchable_text`. The processing service was ported from the schema definition rather than the actual insert/query path.
+
+**Fix:** Update `transformStoryData()` in `vector-inserter.ts` and its corresponding test file.
+
+### 2. Missing `full_text_sparse` field
+
+`scry-nextjs/search-utils.ts` queries a `full_text_sparse` field for BM25 sparse text search, but this field is not defined in `vectorutils.cjs` `setupCollection()` and is not populated by the processing service. Sparse search will return no results until this is addressed. This is a pre-existing gap in `scry-nextjs`, not introduced by the processing service.
 
 ---
 
