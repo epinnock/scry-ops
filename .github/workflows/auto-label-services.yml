@@ -1,0 +1,39 @@
+name: Auto-label Services
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  label-services:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse affected services and apply labels
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT || github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUMBER" --repo ${{ github.repository }} --json body --jq '.body')
+          VALID_LABELS=$(bash scripts/list-services.sh | awk -F'\t' '{print $3}')
+          CHECKED_SERVICES=$(echo "$ISSUE_BODY" | grep -E '^\- \[x\]' | sed 's/^- \[x\] //' | tr -d '\r' || true)
+
+          if [ -z "$CHECKED_SERVICES" ]; then
+            echo "No services checked, skipping"
+            exit 0
+          fi
+
+          while IFS= read -r service; do
+            service=$(echo "$service" | tr -d '[:space:]')
+            [ -z "$service" ] && continue
+            if echo "$VALID_LABELS" | grep -Fxq "$service"; then
+              echo "Applying label: $service"
+              gh issue edit "$ISSUE_NUMBER" --repo ${{ github.repository }} --add-label "$service" || true
+            fi
+          done <<< "$CHECKED_SERVICES"
