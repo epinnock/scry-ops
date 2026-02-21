@@ -58,6 +58,7 @@ Each label maps to a service repo. Adding a label to an issue tells the workflow
 |-------|-----------|-------------|
 | `scry-ops` | epinnock/scry-ops | Orchestrator workflows, plans, and scripts |
 | `upload-service` | epinnock/scry-storybook-upload-service | Backend API for Storybook uploads |
+| `build-processing` | epinnock/scry-build-processing-service | Async build processing pipeline (LOR, embeddings, vector DB) |
 | `cdn-service` | epinnock/scry-cdn-service | CDN for serving deployed Storybooks |
 | `dashboard` | epinnock/scry-developer-dashboard | Web dashboard for project management |
 | `scry-node` | epinnock/scry-node | CLI tool for deploying Storybooks |
@@ -78,6 +79,7 @@ Each label maps to a service repo. Adding a label to an issue tells the workflow
 When you label an issue with a downstream service, the workflow automatically adds its upstream service dependencies from `repo-map.yml` (`depends_on`). This ensures the selected agent always has the context of shared contracts.
 
 - `scry-node` → auto-adds `upload-service`
+- `build-processing` → auto-adds `upload-service`
 - `cdn-service` → auto-adds `upload-service`
 - `dashboard` → auto-adds `upload-service`
 
