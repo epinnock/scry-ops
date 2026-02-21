@@ -21,99 +21,78 @@ Automatically process uploaded Storybook builds for multimodal search indexing. 
 
 ## Architecture Summary
 
-```mermaid
-flowchart TB
-  subgraph UploadService["Upload Service"]
-    UH[POST /api/projects/:id/builds]
-    QB[Queue Producer]
-  end
-
-  subgraph Queue["Cloudflare Queues"]
-    Q[scry-build-processing]
-    DLQ[scry-build-processing-dlq]
-  end
-
-  subgraph ProcessingService["Build Processing Service"]
-    QC[Queue Consumer]
-    ZE[ZIP Extractor]
-    MP[Metadata Parser]
-    LI[LLM Inspector]
-    ST[Searchable Text]
-    EG[Embedding Generator]
-    VI[Vector Inserter]
-  end
-
-  subgraph Storage
-    R2[(R2 Bucket)]
-    FS[(Firestore)]
-  end
-
-  subgraph ExternalAPIs["External APIs"]
-    OAI[OpenAI Vision API]
-    JINA[Jina Embeddings API]
-    MIL[Zilliz Cloud / Milvus]
-  end
-
-  UH --> R2
-  UH --> FS
-  UH --> QB
-  QB --> Q
-  Q --> QC
-  Q -.->|max_retries: 3| DLQ
-  QC --> ZE
-  ZE --> R2
-  ZE --> MP
-  MP --> LI
-  LI --> OAI
-  LI --> ST
-  ST --> EG
-  EG --> JINA
-  EG --> VI
-  VI --> MIL
-  QC --> FS
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  Upload Service                                                             │
+│  POST /api/projects/:id/builds                                              │
+│    ├── writes ZIP ──────────────────────────────────► R2 Bucket              │
+│    ├── creates build record ────────────────────────► Firestore              │
+│    └── enqueues message ──┐                                                 │
+└───────────────────────────┼─────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌───────────────────────────────────────┐
+│  Cloudflare Queue                     │
+│  scry-build-processing                │
+│  (max_retries: 3)                     │
+│    └── on failure ──► DLQ             │
+└───────────────┬───────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Build Processing Service (Queue Consumer)                                │
+│                                                                           │
+│  1. ZIP Extractor ──── downloads from R2 ──► fflate unzip                 │
+│  2. Metadata Parser ── metadata.json + screenshots ──► StoryItem[]        │
+│  3. LLM Inspector ──── batches of 5 ──────────────────► OpenAI Vision API │
+│  4. Searchable Text ── description + tags + queries ──► LOR string        │
+│  5. Embedding Gen ──── batches of 10 ─────────────────► Jina AI API       │
+│  6. Vector Inserter ── batches of 50 ─────────────────► Zilliz Cloud      │
+│  7. Status Update ──── processing result ─────────────► Firestore         │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Processing Pipeline
 
-```mermaid
-sequenceDiagram
-  participant US as Upload Service
-  participant CQ as Cloudflare Queue
-  participant BP as Build Processing Worker
-  participant R2 as R2 Bucket
-  participant FS as Firestore
-  participant OAI as OpenAI
-  participant JINA as Jina AI
-  participant MIL as Zilliz Cloud
-
-  US->>CQ: send({ projectId, versionId, buildId, zipKey })
-  CQ->>BP: MessageBatch (max_batch_size: 1)
-  BP->>FS: updateProcessingStatus("processing")
-  BP->>R2: get(zipKey) → ZIP bytes
-  R2-->>BP: Uint8Array
-  BP->>BP: unzipSync() → metadata.json + screenshots
-
-  loop For each batch of 5 stories
-    BP->>OAI: Vision API (batch prompt + screenshots)
-    OAI-->>BP: XML response (descriptions, tags, queries)
-  end
-
-  BP->>BP: createSearchableText() for each story
-
-  loop For each batch of 10 stories
-    BP->>JINA: Image embeddings (base64 images)
-    JINA-->>BP: 1024-dim vectors
-    BP->>JINA: Text embeddings (searchable text)
-    JINA-->>BP: 1024-dim vectors
-  end
-
-  BP->>BP: padVectors(1024 → 2048)
-  BP->>MIL: POST /v2/vectordb/entities/insert (batch 50)
-  MIL-->>BP: success
-  BP->>FS: updateProcessingStatus("completed")
-  BP->>CQ: message.ack()
+```
+Upload Service
+  │
+  │  send({ projectId, versionId, buildId, zipKey, timestamp })
+  ▼
+Cloudflare Queue ──► Build Processing Worker
+  │
+  │  1. Update Firestore: processingStatus = "processing"
+  │
+  │  2. Download ZIP from R2 (env.STORYBOOK_BUCKET.get(zipKey))
+  │     └── fflate unzipSync() → metadata.json + screenshot PNGs
+  │
+  │  3. Parse metadata.json, match stories to screenshot bytes
+  │     └── produces StoryItem[] (storyId, componentName, screenshotBytes)
+  │
+  │  4. LLM Inspection (batches of 5, max 2 concurrent, 2s delay)
+  │     ├── POST https://api.openai.com/v1/chat/completions
+  │     ├── Batch prompt with base64 screenshots
+  │     └── Parse XML response → { description, tags, searchQueries }
+  │
+  │  5. Create searchable text (LOR) for each story
+  │     └── description + tags + searchQueries + static terms
+  │
+  │  6. Generate embeddings (batches of 10, max 2 concurrent, 1s delay)
+  │     ├── POST https://api.jina.ai/v1/embeddings (image: base64)
+  │     ├── POST https://api.jina.ai/v1/embeddings (text: LOR string)
+  │     └── Both return 1024-dim vectors
+  │
+  │  7. Pad vectors 1024 → 2048 dimensions
+  │
+  │  8. Insert into Milvus (batches of 50)
+  │     └── POST https://{cluster}/v2/vectordb/entities/insert
+  │
+  │  9. Update Firestore: processingStatus = "completed" | "partial" | "failed"
+  │
+  ▼
+message.ack() (success) or message.retry() (failure, up to 3x)
 ```
 
 ---
