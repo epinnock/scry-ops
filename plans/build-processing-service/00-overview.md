@@ -1,0 +1,361 @@
+# 00 – Feature Overview: Async Build Processing Pipeline
+
+## Goal
+
+Automatically process uploaded Storybook builds for multimodal search indexing. When a build is uploaded via the upload service, a queue message triggers the processing pipeline — extracting stories from the ZIP, inspecting screenshots with an LLM, generating embeddings, and inserting vectors into the search database.
+
+**This replaces** the manual local scripts in `scry-nextjs/scripts/` (`inspect-component.cjs`, `analyze-storybook.cjs`, `generate-embeddings.cjs`) with an automated, production-grade Cloudflare Worker.
+
+---
+
+## Key Features
+
+1. **Queue-Driven Processing** – Cloudflare Queues decouple upload from processing; automatic retries and dead-letter queue
+2. **LLM Component Inspection** – OpenAI Vision API analyzes each screenshot for description, tags, and search queries
+3. **Dual-Modal Embeddings** – Jina AI generates both text and image embeddings (1024-dim each, padded to 2048)
+4. **Vector Search Indexing** – Processed stories are inserted into Zilliz Cloud (Milvus) for the search API
+5. **Status Tracking** – Firestore build records updated with processing lifecycle (`queued` → `processing` → `completed`)
+6. **Partial Success Handling** – Individual story failures don't block the entire build; status marked `partial`
+
+---
+
+## Architecture Summary
+
+```mermaid
+flowchart TB
+  subgraph UploadService["Upload Service"]
+    UH[POST /api/projects/:id/builds]
+    QB[Queue Producer]
+  end
+
+  subgraph Queue["Cloudflare Queues"]
+    Q[scry-build-processing]
+    DLQ[scry-build-processing-dlq]
+  end
+
+  subgraph ProcessingService["Build Processing Service"]
+    QC[Queue Consumer]
+    ZE[ZIP Extractor]
+    MP[Metadata Parser]
+    LI[LLM Inspector]
+    ST[Searchable Text]
+    EG[Embedding Generator]
+    VI[Vector Inserter]
+  end
+
+  subgraph Storage
+    R2[(R2 Bucket)]
+    FS[(Firestore)]
+  end
+
+  subgraph ExternalAPIs["External APIs"]
+    OAI[OpenAI Vision API]
+    JINA[Jina Embeddings API]
+    MIL[Zilliz Cloud / Milvus]
+  end
+
+  UH --> R2
+  UH --> FS
+  UH --> QB
+  QB --> Q
+  Q --> QC
+  Q -.->|max_retries: 3| DLQ
+  QC --> ZE
+  ZE --> R2
+  ZE --> MP
+  MP --> LI
+  LI --> OAI
+  LI --> ST
+  ST --> EG
+  EG --> JINA
+  EG --> VI
+  VI --> MIL
+  QC --> FS
+```
+
+---
+
+## Processing Pipeline
+
+```mermaid
+sequenceDiagram
+  participant US as Upload Service
+  participant CQ as Cloudflare Queue
+  participant BP as Build Processing Worker
+  participant R2 as R2 Bucket
+  participant FS as Firestore
+  participant OAI as OpenAI
+  participant JINA as Jina AI
+  participant MIL as Zilliz Cloud
+
+  US->>CQ: send({ projectId, versionId, buildId, zipKey })
+  CQ->>BP: MessageBatch (max_batch_size: 1)
+  BP->>FS: updateProcessingStatus("processing")
+  BP->>R2: get(zipKey) → ZIP bytes
+  R2-->>BP: Uint8Array
+  BP->>BP: unzipSync() → metadata.json + screenshots
+
+  loop For each batch of 5 stories
+    BP->>OAI: Vision API (batch prompt + screenshots)
+    OAI-->>BP: XML response (descriptions, tags, queries)
+  end
+
+  BP->>BP: createSearchableText() for each story
+
+  loop For each batch of 10 stories
+    BP->>JINA: Image embeddings (base64 images)
+    JINA-->>BP: 1024-dim vectors
+    BP->>JINA: Text embeddings (searchable text)
+    JINA-->>BP: 1024-dim vectors
+  end
+
+  BP->>BP: padVectors(1024 → 2048)
+  BP->>MIL: POST /v2/vectordb/entities/insert (batch 50)
+  MIL-->>BP: success
+  BP->>FS: updateProcessingStatus("completed")
+  BP->>CQ: message.ack()
+```
+
+---
+
+## Queue Message Schema
+
+```typescript
+interface QueueMessage {
+  projectId: string;    // Scry project ID
+  versionId: string;    // Semantic version or branch name
+  buildId: string;      // Firestore build document ID
+  zipKey: string;       // R2 object key: {project}/{version}/builds/{buildNumber}/storybook.zip
+  timestamp: number;    // Enqueue time (Date.now())
+}
+```
+
+### Queue Configuration
+
+| Property | Value | Rationale |
+|----------|-------|-----------|
+| `max_batch_size` | 1 | Each build is processed independently |
+| `max_retries` | 3 | Tolerate transient API failures |
+| `dead_letter_queue` | `scry-build-processing-dlq` | Capture permanently failed builds |
+| `max_batch_timeout` | 30s | Wait for queue batch fill |
+| `max_concurrency` | 5 | Parallel build processing |
+| `retry_delay` | 60s | Back off before retry |
+
+---
+
+## Firestore Build Status Extension
+
+Processing adds these fields to existing Build documents in Firestore:
+
+```typescript
+interface ProcessingStatusUpdate {
+  processingStatus: 'queued' | 'processing' | 'completed' | 'partial' | 'failed';
+  processingStartedAt?: string;     // ISO timestamp
+  processingCompletedAt?: string;   // ISO timestamp
+  processedStoryCount?: number;
+  totalStoryCount?: number;
+  processingError?: string;
+}
+```
+
+**Status transitions:**
+```
+Upload completes → queued → processing → completed
+                                       → partial (some stories failed)
+                                       → failed (unrecoverable error)
+```
+
+---
+
+## Milvus Vector Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `primary_key` | VARCHAR | `{projectId}_{storyId}_{timestamp}` |
+| `text_dense` | FLOAT_VECTOR(2048) | Padded text embedding (1024 + 1024 zeros) |
+| `image_dense` | FLOAT_VECTOR(2048) | Padded image embedding (1024 + 1024 zeros) |
+| `text` | VARCHAR | Searchable text (LOR) |
+| `component_name` | VARCHAR | Component display name |
+| `project_id` | VARCHAR | Scry project ID |
+| `timestamp` | INT64 | Processing timestamp |
+| `json_content` | VARCHAR | Full inspection result as JSON |
+
+---
+
+## Subproject Responsibilities
+
+| Subproject | Responsibility |
+|------------|----------------|
+| `scry-build-processing-service` | **New service** — queue consumer, full processing pipeline |
+| `scry-storybook-upload-service` | Queue producer — enqueue message after successful build creation |
+| `scry-ops` | Service registry — add to repo-map.yml, CLAUDE.md, issue templates |
+| `scry-developer-dashboard` | No changes (reads existing Firestore build records) |
+| `scry-cdn-service` | No changes |
+| `scry-node` | No changes |
+| `scry-nextjs` | No changes (scripts being replaced remain for local use) |
+
+---
+
+## Per-Service Changes
+
+### scry-build-processing-service (new)
+
+New Cloudflare Worker with queue consumer. Full directory structure:
+
+```
+scry-build-processing-service/
+├── .github/workflows/deploy.yml
+├── package.json
+├── tsconfig.json
+├── wrangler.toml
+├── vitest.config.ts
+└── src/
+    ├── entry.worker.ts           # Dual handler: fetch (health) + queue (processing)
+    ├── types.ts                  # QueueMessage, StoryItem, ProcessingResult, Env
+    ├── pipeline/
+    │   ├── index.ts              # Orchestrator: processBuild(env, message)
+    │   ├── zip-extractor.ts      # R2 download + fflate extraction
+    │   ├── metadata-parser.ts    # Parse metadata.json, match screenshots
+    │   ├── llm-inspector.ts      # OpenAI Vision batch inspection
+    │   ├── searchable-text.ts    # LOR generation from inspection results
+    │   ├── embedding-generator.ts # Jina API: image + text embeddings
+    │   ├── vector-inserter.ts    # Zilliz Cloud REST API insertion
+    │   └── prompt.ts             # Component inspector prompt constant
+    ├── services/firestore/
+    │   ├── firestore.service.ts  # Interface
+    │   ├── firestore.types.ts    # Build types with processing fields
+    │   └── firestore.worker.ts   # REST API + JWT auth implementation
+    └── utils/
+        ├── base64.ts             # Uint8Array → base64 for Workers
+        ├── batch-processor.ts    # Generic concurrent batch utility
+        ├── vector-utils.ts       # padVector(vec, 2048)
+        └── xml-parser.ts         # XML → JSON for LLM responses
+```
+
+**Dependencies:** `hono`, `fflate`, `@sentry/cloudflare`, `zod`
+**No heavyweight SDKs** — all external API calls via raw `fetch()`.
+
+### scry-storybook-upload-service (modified)
+
+| File | Change |
+|------|--------|
+| `wrangler.toml` | Add `[[queues.producers]]` binding for `BUILD_PROCESSING_QUEUE` |
+| `src/entry.worker.ts` | Add `BUILD_PROCESSING_QUEUE?: Queue` to Bindings, inject via middleware |
+| `src/app.ts` | Add `processingQueue?: Queue` to AppEnv; enqueue message after `createBuild()` |
+
+Queue enqueue is fire-and-forget with try/catch — upload success is never blocked by queue failures.
+
+### scry-ops (modified)
+
+| File | Change |
+|------|--------|
+| `repo-map.yml` | Add `scry-build-processing-service` entry + `milvus` and `cloudflare-queues` infrastructure |
+| `CLAUDE.md` | Add service section, update data flow diagram, update dependency order |
+| `.github/ISSUE_TEMPLATE/cross-service-feature.yml` | Add `build-processing` checkbox |
+| `README.md` | Add service to label table and dependency auto-labeling docs |
+
+---
+
+## Concurrency & Batching
+
+| Phase | Batch Size | Max Concurrent | Delay Between | Rationale |
+|-------|-----------|---------------|---------------|-----------|
+| LLM Inspection | 5 images/call | 2 batches | 2s | OpenAI rate limits |
+| Image Embeddings | 10 images/call | 2 batches | 1s | Jina API limits |
+| Text Embeddings | 10 texts/call | 2 batches | 1s | Jina API limits |
+| Milvus Insert | 50 records/call | 1 | — | Single batch is sufficient |
+
+**Estimated wall time for 50 stories:** ~2–3 minutes (well within 15-minute Queue limit).
+
+---
+
+## Error Handling
+
+| Failure | Strategy |
+|---------|----------|
+| ZIP not found / corrupt | Throw → queue retries (up to 3x) |
+| metadata.json missing | Log, set build status `failed`, ack message (no retry) |
+| OpenAI batch failure | Retry batch 2x in-handler, then skip failed stories |
+| Jina batch failure | Retry with exponential backoff, then skip |
+| Milvus insert failure | Retry 1x, then throw → queue retry |
+| Partial success | Insert successful stories, mark build as `partial` |
+
+---
+
+## Secrets (via `wrangler secret put`)
+
+| Secret | Purpose |
+|--------|---------|
+| `OPENAI_API_KEY` | OpenAI Vision API for component inspection |
+| `JINA_API_KEY` | Jina AI for text and image embeddings |
+| `MILVUS_ADDRESS` | Zilliz Cloud cluster endpoint |
+| `MILVUS_TOKEN` | Zilliz Cloud API token |
+| `FIREBASE_PROJECT_ID` | Firestore project |
+| `FIREBASE_CLIENT_EMAIL` | Service account email |
+| `FIREBASE_PRIVATE_KEY` | Service account RSA private key |
+| `SENTRY_DSN` | Error tracking |
+
+---
+
+## Reference: Ported Logic
+
+| Source (CJS scripts) | Target (TS modules) | What was ported |
+|---|---|---|
+| `scry-nextjs/scripts/inspect-component.cjs` | `pipeline/llm-inspector.ts` | `parseXmlToJson()`, `parseBatchResponse()`, `createBatchPrompt()`, batch inspection |
+| `scry-nextjs/scripts/analyze-storybook.cjs` | `pipeline/searchable-text.ts` | `createSearchableText()` |
+| `scry-nextjs/scripts/generate-embeddings.cjs` | `pipeline/embedding-generator.ts` | Jina API call format, batching |
+| `scry-nextjs/scripts/vectorutils.cjs` | `pipeline/vector-inserter.ts` | `padVector()`, `transformStoryData()`, schema |
+| `scry-nextjs/prompts/componentinspector.prompt` | `pipeline/prompt.ts` | Prompt text as constant |
+| `scry-storybook-upload-service/src/services/firestore/` | `services/firestore/` | JWT auth, Firestore REST API pattern |
+
+---
+
+## Data Flow in Context
+
+```
+CLI (scry-node) → Upload Service → R2 (storage) + Firestore (metadata)
+                                        ↓ (Queue message)
+                  Build Processing Service → OpenAI + Jina → Milvus (vector DB)
+                                        ↓
+CDN Service ← reads from R2 + Firestore
+                                        ↓
+Dashboard ← reads build history from Firestore
+Search API ← queries Milvus for component search
+```
+
+---
+
+## Implementation Phases
+
+1. **Service Registration** – Add to `repo-map.yml`, `CLAUDE.md`, issue templates, README
+2. **Scaffold** – `package.json`, `tsconfig.json`, `wrangler.toml`, `vitest.config.ts`, deploy workflow
+3. **Utilities** – `base64.ts`, `vector-utils.ts`, `xml-parser.ts`, `batch-processor.ts`
+4. **External API Clients** – OpenAI fetch wrapper, Jina fetch wrapper, Milvus REST client, Firestore REST client
+5. **Pipeline Modules** – ZIP extractor → metadata parser → LLM inspector → searchable text → embedding generator → vector inserter
+6. **Orchestrator + Entry** – `pipeline/index.ts`, `entry.worker.ts`
+7. **Tests** – Unit tests for each module with mocked external APIs
+8. **Upload Service Integration** – Queue producer binding + enqueue after build creation
+9. **Infrastructure** – Create queues (`wrangler queues create`), set secrets (`wrangler secret put`)
+
+---
+
+## Pull Requests
+
+| Repo | PR | Branch |
+|------|-----|--------|
+| `epinnock/scry-build-processing-service` | [#1](https://github.com/epinnock/scry-build-processing-service/pull/1) | `feat/initial-build-processing-service` |
+| `epinnock/scry-storybook-upload-service` | [#16](https://github.com/epinnock/scry-storybook-upload-service/pull/16) | `feat/build-processing-queue-producer` |
+| `epinnock/scry-ops` | [#16](https://github.com/epinnock/scry-ops/pull/16) | `feat/register-build-processing-service` |
+
+---
+
+## Verification
+
+1. **Unit tests** – 44 tests across 10 test files covering each pipeline module and utility
+2. **Local dev** – `wrangler dev` with `.dev.vars` for secrets; manually trigger via HTTP endpoint or queue message
+3. **Integration test** – Upload a Storybook ZIP via the upload service, verify:
+   - Queue message received by processing service
+   - Firestore build status transitions: `queued` → `processing` → `completed`
+   - Milvus collection contains new entries with correct embeddings
+   - Search API returns the newly processed components
+4. **Error scenarios** – Upload a ZIP without `metadata.json`, verify graceful failure and `failed` status
