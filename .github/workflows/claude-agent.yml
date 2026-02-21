@@ -234,9 +234,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          model: ${{ env.DEFAULT_CLAUDE_MODEL }}
-          allowed_tools: "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
+          additional_permissions: "Edit,MultiEdit,Glob,Grep,LS,Read,Write,Bash"
           claude_args: |
+            --model ${{ env.DEFAULT_CLAUDE_MODEL }}
             ${{ steps.dirs.outputs.add_dirs }}
             --max-turns 50
 
