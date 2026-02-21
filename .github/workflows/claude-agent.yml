@@ -181,7 +181,13 @@ jobs:
             BRANCH_PREFIX="claude"
           fi
 
-          echo "Selected agent: ${SELECTED_AGENT}"
+          if [ "$SELECTED_AGENT" = "claude" ]; then
+            MODEL="${DEFAULT_CLAUDE_MODEL}"
+          else
+            MODEL="${DEFAULT_CODEX_MODEL}"
+          fi
+
+          echo "Selected agent: ${SELECTED_AGENT} (model: ${MODEL})"
           echo "agent=${SELECTED_AGENT}" >> "$GITHUB_OUTPUT"
           echo "agent_name=${AGENT_NAME}" >> "$GITHUB_OUTPUT"
           echo "branch_prefix=${BRANCH_PREFIX}" >> "$GITHUB_OUTPUT"
