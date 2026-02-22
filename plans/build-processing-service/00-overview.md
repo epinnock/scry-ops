@@ -14,7 +14,7 @@ Automatically process uploaded Storybook builds for multimodal search indexing. 
 2. **LLM Component Inspection** – OpenAI Vision API analyzes each screenshot for description, tags, and search queries
 3. **Dual-Modal Embeddings** – Jina AI generates both text and image embeddings (1024-dim each, padded to 2048)
 4. **Vector Search Indexing** – Processed stories are inserted into Zilliz Cloud (Milvus) for the search API
-5. **Status Tracking** – Firestore build records updated with processing lifecycle (`queued` → `processing` → `completed`)
+5. **Status Tracking** – Firestore build records updated with processing lifecycle (`processing` → `completed`/`partial`/`failed`)
 6. **Partial Success Handling** – Individual story failures don't block the entire build; status marked `partial`
 
 ---
@@ -24,7 +24,7 @@ Automatically process uploaded Storybook builds for multimodal search indexing. 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  Upload Service                                                             │
-│  POST /api/projects/:id/builds                                              │
+│  POST /upload/:project/:version                                             │
 │    ├── writes ZIP ──────────────────────────────────► R2 Bucket              │
 │    ├── creates build record ────────────────────────► Firestore              │
 │    └── enqueues message ──┐                                                 │
@@ -104,7 +104,7 @@ interface QueueMessage {
   projectId: string;    // Scry project ID
   versionId: string;    // Semantic version or branch name
   buildId: string;      // Firestore build document ID
-  zipKey: string;       // R2 object key: {project}/{version}/builds/{buildNumber}/storybook.zip
+  zipKey: string;       // R2 object key: {project}/{version}/storybook.zip
   timestamp: number;    // Enqueue time (Date.now())
 }
 ```
@@ -139,10 +139,12 @@ interface ProcessingStatusUpdate {
 
 **Status transitions:**
 ```
-Upload completes → queued → processing → completed
-                                       → partial (some stories failed)
-                                       → failed (unrecoverable error)
+Upload completes → uploaded (and optionally queued) → processing → completed
+                                                           → partial (some stories failed)
+                                                           → failed (unrecoverable error)
 ```
+
+**Current implementation note:** `queued` is optional in Firestore today. The upload service enqueues in a fire-and-forget `try/catch`; upload success is not blocked by queue failures, and queue failures are only logged.
 
 ---
 
@@ -360,7 +362,7 @@ Search API ← queries Milvus for component search
 2. **Local dev** – `wrangler dev` with `.dev.vars` for secrets; manually trigger via HTTP endpoint or queue message
 3. **Integration test** – Upload a Storybook ZIP via the upload service, verify:
    - Queue message received by processing service
-   - Firestore build status transitions: `queued` → `processing` → `completed`
+   - Firestore build status transitions: `uploaded` (optionally `queued`) → `processing` → `completed`
    - Milvus collection contains new entries with correct embeddings
    - Search API returns the newly processed components
 4. **Error scenarios** – Upload a ZIP without `metadata.json`, verify graceful failure and `failed` status

@@ -126,29 +126,25 @@ storybook.zip
     └── card--default.png
 ```
 
-The `metadata.json` format (from Storybook test-runner output):
+The `metadata.json` format expected by `metadata-parser.ts`:
 
 ```json
-{
-  "stories": [
-    {
-      "id": "button--primary",
-      "title": "Components/Button",
-      "name": "Primary",
-      "importPath": "./src/components/Button.stories.tsx",
-      "tags": ["autodocs"],
-      "screenshot": "images/button--primary.png"
-    },
-    {
-      "id": "button--secondary",
-      "title": "Components/Button",
-      "name": "Secondary",
-      "importPath": "./src/components/Button.stories.tsx",
-      "tags": [],
-      "screenshot": "images/button--secondary.png"
-    }
-  ]
-}
+[
+  {
+    "filepath": "./src/components/Button.stories.tsx",
+    "componentName": "Button",
+    "testName": "Primary",
+    "storyTitle": "Components/Button",
+    "screenshotPath": "images/button--primary.png"
+  },
+  {
+    "filepath": "./src/components/Button.stories.tsx",
+    "componentName": "Button",
+    "testName": "Secondary",
+    "storyTitle": "Components/Button",
+    "screenshotPath": "images/button--secondary.png"
+  }
+]
 ```
 
 If you have an existing Storybook project, generate this with `scry deploy` (dry run) or manually create a small test ZIP.
@@ -160,18 +156,15 @@ mkdir -p /tmp/test-storybook/images
 
 # Create a minimal metadata.json
 cat > /tmp/test-storybook/metadata.json << 'EOF'
-{
-  "stories": [
-    {
-      "id": "button--primary",
-      "title": "Components/Button",
-      "name": "Primary",
-      "importPath": "./src/components/Button.stories.tsx",
-      "tags": [],
-      "screenshot": "images/button--primary.png"
-    }
-  ]
-}
+[
+  {
+    "filepath": "./src/components/Button.stories.tsx",
+    "componentName": "Button",
+    "testName": "Primary",
+    "storyTitle": "Components/Button",
+    "screenshotPath": "images/button--primary.png"
+  }
+]
 EOF
 
 # Create a placeholder screenshot (1x1 red PNG works for testing)
@@ -185,13 +178,13 @@ zip -r /tmp/storybook.zip metadata.json images/
 
 ## Step 4: Upload the Test ZIP to R2
 
-Upload directly to R2 staging using wrangler or the S3 API. The key must follow the convention: `{projectId}/{version}/builds/{buildNumber}/storybook.zip`
+Upload directly to R2 staging using wrangler or the S3 API. The key must follow the convention: `{projectId}/{version}/storybook.zip`
 
 ### Option A: Using wrangler (simplest)
 
 ```bash
 wrangler r2 object put \
-  my-storybooks-staging/test-project/1.0.0/builds/1/storybook.zip \
+  my-storybooks-staging/test-project/1.0.0/storybook.zip \
   --file /tmp/storybook.zip
 ```
 
@@ -205,10 +198,9 @@ cd ~/scry/scry-storybook-upload-service
 wrangler dev
 
 # Terminal 2: Upload
-curl -X POST http://localhost:8787/api/projects/test-project/builds \
-  -H "Authorization: Bearer scry_proj_<your-api-key>" \
-  -F "file=@/tmp/storybook.zip" \
-  -F "version=1.0.0"
+curl -X POST http://localhost:8787/upload/test-project/1.0.0 \
+  -H "X-API-Key: scry_proj_<your-api-key>" \
+  -F "file=@/tmp/storybook.zip"
 ```
 
 This method also creates the Firestore build record and (if the queue binding is configured) enqueues the processing message automatically. However, the Cloudflare Queue binding won't work in local dev, so you'll still need to trigger processing manually in Step 6.
@@ -226,7 +218,7 @@ If you uploaded directly to R2 (Option A), you need a build record in Firestore 
   "buildNumber": 1,
   "version": "1.0.0",
   "status": "uploaded",
-  "zipKey": "test-project/1.0.0/builds/1/storybook.zip",
+  "zipKey": "test-project/1.0.0/storybook.zip",
   "createdAt": "2025-01-01T00:00:00.000Z"
 }
 ```
@@ -269,7 +261,7 @@ curl -X POST http://localhost:8788/process \
     "projectId": "test-project",
     "versionId": "1.0.0",
     "buildId": "<firestore-build-doc-id>",
-    "zipKey": "test-project/1.0.0/builds/1/storybook.zip",
+    "zipKey": "test-project/1.0.0/storybook.zip",
     "timestamp": 1700000000000
   }'
 ```
@@ -279,7 +271,7 @@ curl -X POST http://localhost:8788/process \
 In Terminal 1 (wrangler dev logs), you should see the pipeline steps:
 
 ```
-[ZIP] Downloading: test-project/1.0.0/builds/1/storybook.zip
+[ZIP] Downloading: test-project/1.0.0/storybook.zip
 [ZIP] Extracted: 1 files from metadata, 1 screenshots
 [METADATA] Parsed 1 stories, 1 with screenshots
 [LLM] Inspecting batch 1/1 (1 stories)...
@@ -294,10 +286,12 @@ In Terminal 1 (wrangler dev logs), you should see the pipeline steps:
 
 ```json
 {
-  "status": "completed",
-  "processedCount": 1,
-  "totalCount": 1,
-  "insertedCount": 1
+  "projectId": "test-project",
+  "buildId": "test-build-id",
+  "totalStories": 1,
+  "processedStories": 1,
+  "failedStories": 0,
+  "status": "completed"
 }
 ```
 
@@ -376,7 +370,7 @@ The response should include your test component in the results.
 ### "ZIP not found" error
 
 ```
-[ZIP] Error: Object not found: test-project/1.0.0/builds/1/storybook.zip
+[ZIP] Error: Object not found: test-project/1.0.0/storybook.zip
 ```
 
 The R2 object key doesn't match. Verify:
@@ -462,7 +456,7 @@ curl -X POST "https://<your-cluster>/v2/vectordb/entities/delete" \
 ### Remove test ZIP from R2
 
 ```bash
-wrangler r2 object delete my-storybooks-staging/test-project/1.0.0/builds/1/storybook.zip
+wrangler r2 object delete my-storybooks-staging/test-project/1.0.0/storybook.zip
 ```
 
 ### Remove test build from Firestore
