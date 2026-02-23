@@ -1,0 +1,68 @@
+---
+title: Authentication & Authorization — Cross-Service Flows
+---
+flowchart TD
+    subgraph APIKey["API Key Authentication (Upload Service, CDN)"]
+        API_REQ(["API Request<br/>Header: X-API-Key: scry_proj_{id}_{random}"])
+        API_REQ --> PARSE_KEY["Parse API key<br/>Extract projectId from key format"]
+        PARSE_KEY --> HASH["SHA-256 hash the key"]
+        HASH --> LOOKUP["Query Firestore<br/>projects/{projectId}/apiKeys<br/>Match keyHash"]
+        LOOKUP -- "Match found" --> CHECK_ACTIVE{"Key active?"}
+        CHECK_ACTIVE -- "Yes" --> AUTHORIZED(["Request Authorized<br/>Update lastUsed timestamp"])
+        CHECK_ACTIVE -- "No (revoked)" --> DENIED_REVOKED(["403: Key revoked"])
+        LOOKUP -- "No match" --> DENIED_INVALID(["401: Invalid API key"])
+    end
+
+    subgraph SessionAuth["Session Authentication (Dashboard)"]
+        BROWSER(["User opens Dashboard"])
+        BROWSER --> CHECK_SESSION{"__session<br/>cookie exists?"}
+        CHECK_SESSION -- "No" --> OAUTH_START
+        CHECK_SESSION -- "Yes" --> VERIFY["Verify session cookie<br/>Check expiry (5-day)"]
+        VERIFY -- "Valid" --> DASH_AUTH(["Dashboard Authenticated<br/>Proceed to requested page"])
+        VERIFY -- "Expired/Invalid" --> OAUTH_START
+
+        OAUTH_START["Initiate GitHub OAuth<br/>Firebase GithubAuthProvider"]
+        OAUTH_START --> GH_POPUP["GitHub OAuth popup<br/>User authorizes app"]
+        GH_POPUP --> GH_TOKEN["GitHub returns OAuth token"]
+        GH_TOKEN --> FB_SIGNIN["Firebase signInWithPopup<br/>Create/update Firebase user"]
+        FB_SIGNIN --> ID_TOKEN["Get Firebase ID token"]
+        ID_TOKEN --> CREATE_SESSION["POST /api/auth/session<br/>{idToken}"]
+        CREATE_SESSION --> SET_COOKIE["Set __session cookie<br/>httpOnly, secure, sameSite<br/>Expires: 5 days"]
+        SET_COOKIE --> DASH_AUTH
+    end
+
+    subgraph PrivateProject["Private Project Access (CDN)"]
+        CDN_REQ(["CDN Request for private project<br/>GET /{project}/{version}/{build}/..."])
+        CDN_REQ --> HAS_SESSION{"__session<br/>cookie?"}
+        HAS_SESSION -- "No" --> CDN_DENIED(["403: Authentication required"])
+        HAS_SESSION -- "Yes" --> DECODE_SESSION["Decode session<br/>Extract userId"]
+        DECODE_SESSION --> CHECK_TEAM["Query Firestore<br/>projects/{projectId}/team/{userId}"]
+        CHECK_TEAM -- "Member found" --> CHECK_ROLE{"Role allows<br/>view access?"}
+        CHECK_ROLE -- "Yes (admin/member/viewer)" --> CDN_GRANTED(["Access Granted<br/>Serve Storybook"])
+        CHECK_ROLE -- "No" --> CDN_DENIED
+        CHECK_TEAM -- "Not a member" --> CDN_DENIED
+    end
+
+    subgraph KeyLifecycle["API Key Lifecycle (Dashboard)"]
+        GEN(["Generate New Key"])
+        GEN --> FORMAT["Format: scry_proj_{projectId}_{crypto.random}"]
+        FORMAT --> SHOW_ONCE["Display key to user<br/>(shown only once)"]
+        SHOW_ONCE --> HASH_STORE["SHA-256 hash<br/>Store in Firestore<br/>apiKeys/{keyId}"]
+        HASH_STORE --> ACTIVE["Key Active<br/>Can be used for API calls"]
+        ACTIVE --> REVOKE["Revoke Key<br/>Delete from apiKeys"]
+        REVOKE --> INACTIVE(["Key Inactive<br/>All future requests fail"])
+    end
+
+    classDef request fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef decision fill:#9013FE,stroke:#6D0EBE,color:#fff
+    classDef success fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef denied fill:#D0021B,stroke:#A00116,color:#fff
+    classDef oauth fill:#BD10E0,stroke:#8E0BA8,color:#fff
+
+    class API_REQ,BROWSER,CDN_REQ,GEN request
+    class PARSE_KEY,HASH,LOOKUP,VERIFY,DECODE_SESSION,CHECK_TEAM,FORMAT,SHOW_ONCE,HASH_STORE process
+    class CHECK_ACTIVE,CHECK_SESSION,HAS_SESSION,CHECK_ROLE decision
+    class AUTHORIZED,DASH_AUTH,CDN_GRANTED,ACTIVE success
+    class DENIED_REVOKED,DENIED_INVALID,CDN_DENIED,INACTIVE denied
+    class OAUTH_START,GH_POPUP,GH_TOKEN,FB_SIGNIN,ID_TOKEN,CREATE_SESSION,SET_COOKIE oauth

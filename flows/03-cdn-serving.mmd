@@ -1,0 +1,71 @@
+---
+title: CDN Serving Flow — Request to Response
+---
+flowchart TD
+    REQ(["HTTP Request<br/>GET /{project}/{version}/{buildNo}/path/to/file"])
+
+    REQ --> PARSE["Parse URL path<br/>Extract: project, version, buildNo, filepath"]
+
+    PARSE --> PRIVATE{"Is project<br/>private?"}
+
+    PRIVATE -- "Yes" --> AUTH["Validate session cookie<br/>Query Firestore for permissions"]
+    AUTH -- "Authorized" --> CACHE
+    AUTH -- "Unauthorized" --> DENY["Return 403 Forbidden"]
+
+    PRIVATE -- "No (public)" --> CACHE
+
+    CACHE["Check KV Cache<br/>Key: {project}:{version}:{buildNo}:{filepath}"]
+    CACHE -- "Cache HIT" --> RETURN_CACHED["Return cached content<br/>with Content-Type header"]
+
+    CACHE -- "Cache MISS" --> R2["Fetch from R2 Storage<br/>{project}/{version}/builds/{N}/storybook.zip"]
+
+    R2 -- "ZIP found" --> PARTIAL["Partial ZIP Extraction<br/>Byte-range request<br/>Decompress only requested file"]
+
+    R2 -- "ZIP not found" --> NOT_FOUND["Return 404 Not Found"]
+
+    PARTIAL -- "File found in ZIP" --> CONTENT_TYPE["Determine Content-Type<br/>from file extension"]
+    PARTIAL -- "File not in ZIP" --> SPA{"SPA Fallback?"}
+
+    SPA -- "Yes: try /index.html" --> FALLBACK["Extract index.html<br/>from ZIP"]
+    SPA -- "No" --> NOT_FOUND
+
+    FALLBACK --> CONTENT_TYPE
+
+    CONTENT_TYPE --> WRITE_CACHE["Write to KV Cache<br/>TTL: 24 hours"]
+    WRITE_CACHE --> RESPOND["Return Response<br/>Content-Type header<br/>Cache-Control header<br/>ETag header"]
+
+    RETURN_CACHED --> BROWSER(["Browser renders<br/>Storybook page"])
+    RESPOND --> BROWSER
+    DENY --> ERROR(["Error displayed"])
+    NOT_FOUND --> ERROR
+
+    subgraph "Layer 1: Auth"
+        PRIVATE
+        AUTH
+    end
+
+    subgraph "Layer 2: Edge Cache"
+        CACHE
+    end
+
+    subgraph "Layer 3: Origin Storage"
+        R2
+        PARTIAL
+        FALLBACK
+    end
+
+    classDef request fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef cache fill:#F8E71C,stroke:#C4B816,color:#333
+    classDef storage fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef error fill:#D0021B,stroke:#A00116,color:#fff
+    classDef success fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef decision fill:#9013FE,stroke:#6D0EBE,color:#fff
+
+    class REQ request
+    class PARSE,CONTENT_TYPE,WRITE_CACHE process
+    class CACHE,RETURN_CACHED cache
+    class R2,PARTIAL,FALLBACK storage
+    class DENY,NOT_FOUND,ERROR error
+    class RESPOND,BROWSER success
+    class PRIVATE,SPA decision

@@ -1,0 +1,67 @@
+---
+title: scry-node CLI — Command Flows
+---
+flowchart TD
+    subgraph Init["scry init"]
+        INIT_START(["scry init<br/>--project-id X --api-key Y"])
+        INIT_START --> INIT_VALIDATE["Validate inputs<br/>project-id, api-key"]
+        INIT_VALIDATE --> INIT_WORKFLOW["Generate<br/>.github/workflows/deploy-storybook.yml"]
+        INIT_WORKFLOW --> INIT_SECRETS["Configure secrets:<br/>SCRY_PROJECT_ID<br/>SCRY_API_KEY"]
+        INIT_SECRETS --> INIT_DONE(["Display setup instructions<br/>'Push to trigger deploy'"])
+    end
+
+    subgraph Deploy["scry deploy"]
+        DEPLOY_START(["scry deploy<br/>--dir ./storybook-static<br/>--project X --deploy-version Y<br/>--api-key Z"])
+
+        DEPLOY_START --> VALIDATE["Validate inputs"]
+        VALIDATE --> CHECK_DIR{"Directory<br/>exists?"}
+        CHECK_DIR -- "No" --> ERR_DIR(["Exit 1: Directory not found"])
+        CHECK_DIR -- "Yes" --> CHECK_KEY{"API key<br/>format valid?"}
+        CHECK_KEY -- "No" --> ERR_KEY(["Exit 1: Invalid API key"])
+        CHECK_KEY -- "Yes" --> ZIP["ZIP storybook-static/"]
+
+        ZIP --> PRESIGN["POST /presigned-url<br/>{projectId, versionId}"]
+        PRESIGN --> UPLOAD_ZIP["PUT presigned-url<br/>Upload storybook.zip to R2"]
+        UPLOAD_ZIP --> CREATE_BUILD["POST /upload/{project}/{version}<br/>Create build record"]
+        CREATE_BUILD --> BUILD_OK{"Build<br/>created?"}
+        BUILD_OK -- "No" --> ERR_BUILD(["Exit 1: Build creation failed"])
+        BUILD_OK -- "Yes" --> COV_CHECK{"Coverage<br/>report available?"}
+
+        COV_CHECK -- "Yes" --> UPLOAD_COV["POST /upload/{project}/{version}/coverage<br/>Upload coverage report"]
+        COV_CHECK -- "No" --> GH_CHECK
+
+        UPLOAD_COV --> GH_CHECK{"Running in<br/>GitHub Actions?"}
+        GH_CHECK -- "Yes" --> PR_COMMENT["Post PR comment<br/>Build #, View URL, Coverage"]
+        GH_CHECK -- "No" --> OUTPUT
+
+        PR_COMMENT --> OUTPUT["Display results<br/>Build #{N}<br/>View URL: view.scrymore.com/..."]
+        OUTPUT --> DONE(["Exit 0: Deploy complete"])
+    end
+
+    subgraph Login["scry login"]
+        LOGIN_START(["scry login"])
+        LOGIN_START --> LOGIN_PROMPT["Prompt for API key"]
+        LOGIN_PROMPT --> LOGIN_VALIDATE["Validate key with Upload Service"]
+        LOGIN_VALIDATE --> LOGIN_STORE["Store credentials locally"]
+        LOGIN_STORE --> LOGIN_DONE(["Login successful"])
+    end
+
+    subgraph Coverage["scry coverage"]
+        COV_START(["scry coverage<br/>--dir ./storybook-static"])
+        COV_START --> COV_RUN["Run scry-sbcov analysis<br/>Detect components<br/>Calculate metrics"]
+        COV_RUN --> COV_OUTPUT["Write coverage-report.json"]
+        COV_OUTPUT --> COV_DONE(["Coverage analysis complete"])
+    end
+
+    classDef start fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef decision fill:#9013FE,stroke:#6D0EBE,color:#fff
+    classDef error fill:#D0021B,stroke:#A00116,color:#fff
+    classDef success fill:#50E3C2,stroke:#3CB09A,color:#333
+
+    class INIT_START,DEPLOY_START,LOGIN_START,COV_START start
+    class VALIDATE,ZIP,PRESIGN,UPLOAD_ZIP,CREATE_BUILD,UPLOAD_COV,PR_COMMENT,OUTPUT process
+    class INIT_VALIDATE,INIT_WORKFLOW,INIT_SECRETS,LOGIN_PROMPT,LOGIN_VALIDATE,LOGIN_STORE,COV_RUN,COV_OUTPUT process
+    class CHECK_DIR,CHECK_KEY,BUILD_OK,COV_CHECK,GH_CHECK decision
+    class ERR_DIR,ERR_KEY,ERR_BUILD error
+    class DONE,INIT_DONE,LOGIN_DONE,COV_DONE success

@@ -1,0 +1,53 @@
+---
+title: Upload Pipeline — CLI to Storage
+---
+sequenceDiagram
+    actor Dev as Developer
+    participant CLI as scry-node CLI
+    participant US as Upload Service
+    participant R2 as Cloudflare R2
+    participant FS as Firestore
+    participant Q as Cloudflare Queue
+    participant BPS as Build Processing
+
+    Dev->>CLI: scry deploy --dir ./storybook-static
+    activate CLI
+
+    Note over CLI: Validate directory exists<br/>Validate API key format<br/>ZIP storybook-static/
+
+    CLI->>US: POST /presigned-url<br/>{projectId, versionId, contentType}
+    activate US
+    US->>FS: Validate API key (SHA-256 hash lookup)
+    FS-->>US: Key valid, project authorized
+    US-->>CLI: {url: presigned-s3-url, expiresAt}
+    deactivate US
+
+    CLI->>R2: PUT presigned-url<br/>Content: storybook.zip
+    R2-->>CLI: 200 OK, ETag
+
+    CLI->>US: POST /upload/{project}/{version}<br/>Headers: X-API-Key<br/>{zipUrl, zipSize, metadata}
+    activate US
+
+    par Store build data
+        US->>R2: Confirm ZIP at<br/>{project}/{version}/builds/{N}/storybook.zip
+        US->>FS: Create build document<br/>{buildId, buildNumber, zipUrl, status: success}
+    end
+
+    US->>Q: Enqueue build processing message<br/>{buildId, projectId, versionId, buildNumber}
+    Q-->>BPS: Async trigger
+
+    US-->>CLI: {buildId, buildNumber, buildUrl}
+    deactivate US
+
+    opt Coverage report available
+        CLI->>US: POST /upload/{project}/{version}/coverage<br/>{summary, qualityGate, generatedAt}
+        US->>FS: Update build doc with coverage data
+        US->>R2: Store coverage-report.json
+    end
+
+    opt Running in GitHub Actions
+        CLI->>CLI: Post PR comment<br/>Build #{N}, View URL, Coverage
+    end
+
+    CLI-->>Dev: Deploy complete!<br/>Build #{N}<br/>view.scrymore.com/{project}/{version}/{N}
+    deactivate CLI

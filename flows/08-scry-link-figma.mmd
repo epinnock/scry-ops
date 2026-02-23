@@ -1,0 +1,44 @@
+---
+title: scry-link — Figma Plugin Flow
+---
+sequenceDiagram
+    actor Designer as Designer (Figma)
+    participant Plugin as scry-link Plugin
+    participant Search as Search API
+    participant CDN as CDN Service
+    participant Milvus as Milvus Vector DB
+
+    Note over Designer,CDN: Component Discovery Flow
+
+    Designer->>Plugin: Select layer/component in Figma
+    Plugin->>Plugin: Extract component name<br/>Parse layer metadata
+
+    alt Text-based search
+        Plugin->>Search: POST /api/search<br/>{query: componentName, type: "text"}
+        Search->>Milvus: Vector similarity search
+        Milvus-->>Search: Matching components
+    else Visual search
+        Plugin->>Plugin: Export selection as image
+        Plugin->>Search: POST /api/search<br/>{query: base64_image, type: "image"}
+        Search->>Milvus: Cross-modal vector search
+        Milvus-->>Search: Matching components
+    end
+
+    Search-->>Plugin: Component results<br/>[{name, score, previewUrl, storyUrl}]
+
+    Plugin->>Designer: Display matched stories<br/>Component name, preview, score
+
+    Note over Designer,CDN: Story Linking Flow
+
+    Designer->>Plugin: Select matching story
+    Plugin->>Plugin: Store link metadata<br/>Figma node ID ↔ Story ID
+
+    Designer->>Plugin: Click "View Story"
+    Plugin->>CDN: Open Storybook URL<br/>view.scrymore.com/{project}/{version}/{build}/...
+    CDN-->>Designer: Render Storybook story
+
+    Note over Designer,CDN: Annotation Flow
+
+    Designer->>Plugin: Add annotation to layer
+    Plugin->>Plugin: Attach story reference<br/>Component docs, prop info
+    Plugin->>Designer: Layer now shows<br/>linked Storybook story badge

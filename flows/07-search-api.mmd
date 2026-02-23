@@ -1,0 +1,63 @@
+---
+title: Search API (scry-nextjs) — Multimodal Component Search
+---
+flowchart TD
+    subgraph TextSearch["Text Search Flow"]
+        TEXT_REQ(["POST /api/search<br/>{query: 'button', type: 'text'}"])
+        TEXT_REQ --> TEXT_EMBED["Generate text embedding<br/>Jina AI API<br/>Input: query string<br/>Output: vector (768-1024 dim)"]
+        TEXT_EMBED --> TEXT_SEARCH["Vector search in Milvus<br/>K-NN: top 20 results<br/>Score threshold filtering"]
+    end
+
+    subgraph ImageSearch["Image Search Flow"]
+        IMG_REQ(["POST /api/search<br/>{query: base64_image, type: 'image'}"])
+        IMG_REQ --> IMG_EMBED["Generate visual embedding<br/>Jina AI API<br/>Input: image data<br/>Output: vector (768-1024 dim)"]
+        IMG_EMBED --> IMG_SEARCH["Vector search in Milvus<br/>K-NN: top 20 results<br/>Cross-modal matching"]
+    end
+
+    subgraph HybridSearch["Hybrid Search Flow"]
+        HYB_REQ(["POST /api/search<br/>{query: 'button', image: base64,<br/>type: 'hybrid'}"])
+        HYB_REQ --> HYB_TEXT["Generate text embedding"]
+        HYB_REQ --> HYB_IMG["Generate image embedding"]
+        HYB_TEXT --> HYB_COMBINE["Combine results<br/>Weighted scoring<br/>Reciprocal rank fusion"]
+        HYB_IMG --> HYB_COMBINE
+    end
+
+    TEXT_SEARCH --> ENRICH
+    IMG_SEARCH --> ENRICH
+    HYB_COMBINE --> ENRICH
+
+    ENRICH["Enrich Results<br/>Fetch component metadata<br/>Add preview URLs from CDN<br/>Include usage examples"]
+
+    ENRICH --> RESPONSE["Response"]
+
+    RESPONSE --> RESULT["JSON Result Array<br/>[{<br/>  component: 'Button',<br/>  score: 0.95,<br/>  file: 'src/Button.tsx',<br/>  previewUrl: 'view.scrymore.com/...',<br/>  metadata: {...}<br/>}]"]
+
+    subgraph DataSource["Data Source (populated by Build Processing)"]
+        MILVUS[("Milvus Vector DB<br/>Collections by project<br/>Fields: embedding, name,<br/>type, file, version")]
+    end
+
+    TEXT_SEARCH -.-> MILVUS
+    IMG_SEARCH -.-> MILVUS
+    HYB_COMBINE -.-> MILVUS
+
+    subgraph Consumers["Search Consumers"]
+        DASH["Developer Dashboard<br/>Component search"]
+        FIGMA_PLUGIN["scry-link Figma Plugin<br/>Find matching components"]
+        API_USER["External API users"]
+    end
+
+    RESULT --> DASH
+    RESULT --> FIGMA_PLUGIN
+    RESULT --> API_USER
+
+    classDef request fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef storage fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef result fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef consumer fill:#F8E71C,stroke:#C4B816,color:#333
+
+    class TEXT_REQ,IMG_REQ,HYB_REQ request
+    class TEXT_EMBED,IMG_EMBED,TEXT_SEARCH,IMG_SEARCH,HYB_TEXT,HYB_IMG,HYB_COMBINE,ENRICH process
+    class MILVUS storage
+    class RESPONSE,RESULT result
+    class DASH,FIGMA_PLUGIN,API_USER consumer

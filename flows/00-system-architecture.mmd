@@ -1,0 +1,83 @@
+---
+title: Scry Platform — System Architecture
+---
+graph TB
+    subgraph Clients["Client Tools"]
+        CLI["scry-node CLI<br/>@scrymore/scry-deployer"]
+        DASH["Developer Dashboard<br/>Next.js 15 · Vercel"]
+        FIGMA["scry-link<br/>Figma Plugin"]
+        SBCOV["scry-sbcov<br/>Coverage Analyzer"]
+    end
+
+    subgraph Workers["Cloudflare Workers"]
+        UPLOAD["Upload Service<br/>Hono · Workers"]
+        CDN["CDN Service<br/>Hono · Workers"]
+        BPS["Build Processing Service<br/>Hono · Workers"]
+    end
+
+    subgraph Search["Search Infrastructure"]
+        SEARCH["Search API<br/>Next.js 15"]
+        MILVUS[("Milvus / Zilliz<br/>Vector DB")]
+    end
+
+    subgraph Storage["Storage Layer"]
+        R2[("Cloudflare R2<br/>S3-compatible")]
+        KV[("Cloudflare KV<br/>Edge Cache")]
+        FS[("Firestore<br/>Metadata + Auth")]
+    end
+
+    subgraph External["External APIs"]
+        OPENAI["OpenAI GPT<br/>LLM Inspection"]
+        JINA["Jina AI<br/>Embeddings"]
+        GHAUTH["Firebase Auth<br/>GitHub OAuth"]
+    end
+
+    subgraph Queue["Messaging"]
+        CFQ{{"Cloudflare Queue"}}
+    end
+
+    CLI -- "1. Get presigned URL" --> UPLOAD
+    CLI -- "2. Upload ZIP" --> R2
+    CLI -- "3. Create build record" --> UPLOAD
+    CLI -- "4. Upload coverage" --> UPLOAD
+    SBCOV -. "coverage report" .-> CLI
+
+    UPLOAD -- "write ZIP" --> R2
+    UPLOAD -- "write metadata" --> FS
+    UPLOAD -- "enqueue build" --> CFQ
+
+    CFQ -- "trigger" --> BPS
+    BPS -- "read ZIP" --> R2
+    BPS -- "inspect components" --> OPENAI
+    BPS -- "generate embeddings" --> JINA
+    BPS -- "store vectors" --> MILVUS
+    BPS -- "update status" --> FS
+
+    CDN -- "check cache" --> KV
+    CDN -- "read ZIP" --> R2
+    CDN -- "auth check" --> FS
+
+    DASH -- "authenticate" --> GHAUTH
+    DASH -- "CRUD projects" --> FS
+    DASH -- "read builds" --> FS
+    DASH -- "view storybook" --> CDN
+
+    SEARCH -- "generate query embedding" --> JINA
+    SEARCH -- "vector search" --> MILVUS
+
+    FIGMA -- "search components" --> SEARCH
+    FIGMA -- "view storybook" --> CDN
+
+    classDef client fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef worker fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef storage fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef external fill:#BD10E0,stroke:#8E0BA8,color:#fff
+    classDef queue fill:#F8E71C,stroke:#C4B816,color:#333
+    classDef search fill:#50E3C2,stroke:#3CB09A,color:#333
+
+    class CLI,DASH,FIGMA,SBCOV client
+    class UPLOAD,CDN,BPS worker
+    class R2,KV,FS storage
+    class OPENAI,JINA,GHAUTH external
+    class CFQ queue
+    class SEARCH,MILVUS search

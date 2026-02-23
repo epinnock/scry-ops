@@ -1,0 +1,62 @@
+---
+title: Build Processing Pipeline — Async Indexing
+---
+flowchart TD
+    START(["Queue Message Received"])
+    START --> PARSE["Parse message<br/>buildId, projectId, versionId, buildNumber"]
+
+    PARSE --> FETCH["Fetch ZIP from R2<br/>{project}/{version}/builds/{N}/storybook.zip"]
+    FETCH --> EXTRACT["Extract ZIP contents<br/>Parse stories.json"]
+
+    EXTRACT --> IDENTIFY["Identify components<br/>Props, variants, file paths"]
+    IDENTIFY --> LLM["LLM Inspection (OpenAI GPT)<br/>Generate component summaries<br/>Categorize by type<br/>Enhance searchable text"]
+
+    LLM --> EMBED["Generate Embeddings (Jina AI)<br/>Convert text descriptions to vectors<br/>One embedding per component<br/>Dimensionality: 768-1024"]
+
+    EMBED --> STORE["Upsert to Milvus Vector DB<br/>Collection: by project<br/>Metadata: name, type, file, version"]
+    STORE --> UPDATE["Update Firestore<br/>build.status = indexed"]
+
+    UPDATE --> DONE(["Processing Complete"])
+
+    FETCH -- "ZIP not found" --> ERR_FETCH["Log error<br/>Mark build as failed"]
+    LLM -- "API error" --> ERR_LLM["Retry with backoff<br/>or mark as failed"]
+    EMBED -- "API error" --> ERR_EMBED["Retry with backoff<br/>or mark as failed"]
+    STORE -- "Insert error" --> ERR_STORE["Log error<br/>Partial index recorded"]
+
+    ERR_FETCH --> FAIL(["Build Processing Failed"])
+    ERR_LLM --> FAIL
+    ERR_EMBED --> FAIL
+    ERR_STORE --> FAIL
+
+    subgraph "Step 1: Extraction"
+        FETCH
+        EXTRACT
+    end
+
+    subgraph "Step 2: Analysis"
+        IDENTIFY
+        LLM
+    end
+
+    subgraph "Step 3: Indexing"
+        EMBED
+        STORE
+    end
+
+    subgraph "Step 4: Finalize"
+        UPDATE
+    end
+
+    classDef start fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef external fill:#BD10E0,stroke:#8E0BA8,color:#fff
+    classDef storage fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef error fill:#D0021B,stroke:#A00116,color:#fff
+    classDef done fill:#50E3C2,stroke:#3CB09A,color:#333
+
+    class START start
+    class PARSE,EXTRACT,IDENTIFY process
+    class FETCH,STORE,UPDATE storage
+    class LLM,EMBED external
+    class ERR_FETCH,ERR_LLM,ERR_EMBED,ERR_STORE,FAIL error
+    class DONE done
