@@ -1,0 +1,80 @@
+---
+title: Complete Data Flow — End to End
+---
+flowchart LR
+    subgraph Developer["Developer Workflow"]
+        DEV["Developer"]
+        SB["Build Storybook<br/>npm run build-storybook"]
+        COV["Run Coverage<br/>scry-sbcov"]
+        DEPLOY["scry deploy"]
+    end
+
+    subgraph UploadPhase["Upload Phase"]
+        PRESIGN["GET /presigned-url"]
+        R2_WRITE[("R2: Write ZIP<br/>{project}/{version}/<br/>builds/{N}/storybook.zip")]
+        BUILD_REC["POST /upload/{project}/{version}<br/>Create build record"]
+        FS_BUILD[("Firestore:<br/>builds/{buildId}<br/>+ coverage data")]
+    end
+
+    subgraph ProcessingPhase["Async Processing Phase"]
+        QUEUE{{"Cloudflare Queue<br/>Build message"}}
+        EXTRACT["Extract ZIP<br/>Parse stories.json"]
+        LLM["OpenAI GPT<br/>Component analysis"]
+        EMBED["Jina AI<br/>Generate embeddings"]
+        MILVUS[("Milvus Vector DB<br/>Component vectors")]
+    end
+
+    subgraph ServingPhase["Serving Phase"]
+        CDN_REQ["Browser request<br/>/{project}/{version}/{N}/..."]
+        KV_CHECK[("KV Cache<br/>24hr TTL")]
+        R2_READ[("R2: Read ZIP<br/>Partial extraction")]
+        RESPONSE["HTTP Response<br/>HTML/JS/CSS/assets"]
+    end
+
+    subgraph ConsumerPhase["Consumer Applications"]
+        DASHBOARD["Dashboard<br/>Build history, coverage,<br/>project management"]
+        SEARCH["Search API<br/>Text/image/hybrid<br/>component search"]
+        FIGMA["Figma Plugin<br/>Component linking"]
+    end
+
+    DEV --> SB
+    SB --> COV
+    COV --> DEPLOY
+
+    DEPLOY --> PRESIGN
+    PRESIGN --> R2_WRITE
+    R2_WRITE --> BUILD_REC
+    BUILD_REC --> FS_BUILD
+    BUILD_REC --> QUEUE
+
+    QUEUE --> EXTRACT
+    EXTRACT --> LLM
+    LLM --> EMBED
+    EMBED --> MILVUS
+
+    CDN_REQ --> KV_CHECK
+    KV_CHECK -- "miss" --> R2_READ
+    R2_READ --> RESPONSE
+    KV_CHECK -- "hit" --> RESPONSE
+
+    FS_BUILD --> DASHBOARD
+    R2_WRITE -.-> CDN_REQ
+    MILVUS --> SEARCH
+    SEARCH --> FIGMA
+    SEARCH --> DASHBOARD
+
+    classDef dev fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef upload fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef storage fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef process fill:#BD10E0,stroke:#8E0BA8,color:#fff
+    classDef serve fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef consumer fill:#F8E71C,stroke:#C4B816,color:#333
+    classDef queue fill:#D0021B,stroke:#A00116,color:#fff
+
+    class DEV,SB,COV,DEPLOY dev
+    class PRESIGN,BUILD_REC upload
+    class R2_WRITE,FS_BUILD,KV_CHECK,R2_READ,MILVUS storage
+    class EXTRACT,LLM,EMBED process
+    class CDN_REQ,RESPONSE serve
+    class DASHBOARD,SEARCH,FIGMA consumer
+    class QUEUE queue

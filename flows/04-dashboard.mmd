@@ -1,0 +1,78 @@
+---
+title: Developer Dashboard — User Flows
+---
+flowchart TD
+    subgraph Auth["Authentication Flow"]
+        LOGIN(["User visits dashboard"])
+        LOGIN --> SIGNIN["Click 'Sign in with GitHub'"]
+        SIGNIN --> FIREBASE["Firebase Auth popup<br/>GithubAuthProvider OAuth"]
+        FIREBASE --> TOKEN["Get Firebase ID token"]
+        TOKEN --> SESSION["POST /api/auth/session<br/>{idToken}"]
+        SESSION --> COOKIE["Set __session cookie<br/>httpOnly, 5-day expiry"]
+        COOKIE --> HOME
+    end
+
+    subgraph Dashboard["Dashboard Home"]
+        HOME["Dashboard Home /"]
+        HOME --> GUARD["AuthGuard checks cookie"]
+        GUARD -- "Valid" --> PROJECTS["Query Firestore<br/>projects where userId = me"]
+        GUARD -- "Invalid" --> LOGIN
+        PROJECTS --> LIST["Display project cards<br/>Name, description, last build"]
+    end
+
+    subgraph ProjectMgmt["Project Management"]
+        LIST --> CREATE_NEW["Create New Project"]
+        LIST --> IMPORT_GH["Import from GitHub"]
+        LIST --> SELECT["Select existing project"]
+
+        CREATE_NEW --> FORM["Project form<br/>Name, description, visibility"]
+        FORM --> SAVE_PROJECT["Write to Firestore<br/>projects/{projectId}"]
+        SAVE_PROJECT --> DETAIL
+
+        IMPORT_GH --> GH_API["Fetch GitHub repos<br/>via OAuth token"]
+        GH_API --> SELECT_REPO["Select repository"]
+        SELECT_REPO --> SAVE_PROJECT
+
+        SELECT --> DETAIL
+    end
+
+    subgraph ProjectDetail["Project Detail /projects/[id]"]
+        DETAIL["Project Detail Page"]
+        DETAIL --> BUILDS["Query builds collection<br/>Order by createdAt DESC"]
+        BUILDS --> BUILD_LIST["Display build cards<br/>Version, build #, coverage %, quality gate"]
+
+        BUILD_LIST --> VIEW_SB["View Storybook<br/>Link to CDN<br/>view.scrymore.com/{p}/{v}/{n}"]
+        BUILD_LIST --> VIEW_COV["View Coverage<br/>/projects/[id]/builds/[bid]/coverage"]
+
+        VIEW_COV --> FETCH_COV["Fetch coverage-report.json<br/>from R2 via report URL"]
+        FETCH_COV --> RENDER_COV["Render coverage dashboard<br/>Metrics, component breakdown,<br/>quality gate checks"]
+    end
+
+    subgraph Settings["Project Settings /projects/[id]/settings"]
+        DETAIL --> SETTINGS["Project Settings"]
+        SETTINGS --> API_KEYS["API Key Management"]
+        SETTINGS --> TEAM["Team Management"]
+        SETTINGS --> VISIBILITY["Visibility Settings"]
+
+        API_KEYS --> GEN_KEY["Generate API key<br/>scry_proj_{id}_{random}"]
+        GEN_KEY --> HASH_KEY["SHA-256 hash key<br/>Store hash in Firestore"]
+        API_KEYS --> REVOKE["Revoke key<br/>Delete from apiKeys"]
+
+        TEAM --> INVITE["Invite member by email"]
+        INVITE --> TEAM_DOC["Write to team collection<br/>{email, role, joinedAt}"]
+        TEAM --> ROLES["Manage roles<br/>admin, member, viewer"]
+
+        VISIBILITY --> TOGGLE["Toggle public/private"]
+    end
+
+    classDef auth fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef page fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef action fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef data fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef external fill:#BD10E0,stroke:#8E0BA8,color:#fff
+
+    class LOGIN,SIGNIN,FIREBASE,TOKEN,SESSION,COOKIE auth
+    class HOME,DETAIL,SETTINGS,LIST,BUILD_LIST page
+    class CREATE_NEW,IMPORT_GH,SELECT,GEN_KEY,REVOKE,INVITE,TOGGLE action
+    class PROJECTS,BUILDS,SAVE_PROJECT,HASH_KEY,TEAM_DOC,FETCH_COV data
+    class VIEW_SB,VIEW_COV,RENDER_COV,GH_API external

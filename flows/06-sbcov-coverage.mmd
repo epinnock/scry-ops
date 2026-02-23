@@ -1,0 +1,74 @@
+---
+title: scry-sbcov — Coverage Analysis Flow
+---
+flowchart TD
+    START(["scry-sbcov<br/>Input: storybook-static directory"])
+
+    START --> SCAN["Scan storybook-static/<br/>Locate stories.json<br/>Identify all story files"]
+
+    SCAN --> DETECT["Component Detection<br/>Parse story metadata<br/>Map components to story files"]
+
+    DETECT --> ANALYZE_COV["Coverage Analysis"]
+
+    subgraph Analysis["Coverage Metrics Calculation"]
+        ANALYZE_COV --> COMP_COV["Component Coverage<br/>componentsWithStories / totalComponents"]
+        ANALYZE_COV --> PROP_COV["Prop Coverage<br/>Analyze arg types coverage<br/>per component"]
+        ANALYZE_COV --> VARIANT_COV["Variant Coverage<br/>Story permutations vs<br/>possible prop combinations"]
+        ANALYZE_COV --> PASS_RATE["Pass Rate<br/>Passing stories / total stories"]
+    end
+
+    COMP_COV --> SUMMARY
+    PROP_COV --> SUMMARY
+    VARIANT_COV --> SUMMARY
+    PASS_RATE --> SUMMARY
+
+    SUMMARY["Build Summary<br/>componentCoverage, propCoverage,<br/>variantCoverage, passRate,<br/>totalComponents, failingStories"]
+
+    SUMMARY --> GATE{"Quality Gate<br/>Evaluation"}
+
+    subgraph QualityGate["Quality Gate Checks"]
+        GATE --> CHECK_COMP{"componentCoverage<br/>≥ threshold?"}
+        GATE --> CHECK_PROP{"propCoverage<br/>≥ threshold?"}
+        GATE --> CHECK_VARIANT{"variantCoverage<br/>≥ threshold?"}
+        GATE --> CHECK_PASS{"passRate<br/>= 100%?"}
+    end
+
+    CHECK_COMP --> RESULT
+    CHECK_PROP --> RESULT
+    CHECK_VARIANT --> RESULT
+    CHECK_PASS --> RESULT
+
+    RESULT["Compile Results<br/>qualityGate.passed: boolean<br/>Individual check results"]
+
+    RESULT --> GIT_CHECK{"New-code<br/>analysis?"}
+
+    GIT_CHECK -- "Yes (git history)" --> DIFF["Git Diff Analysis<br/>Identify changed/new components<br/>Check coverage for new code only"]
+    GIT_CHECK -- "No" --> REPORT
+
+    DIFF --> REPORT
+
+    REPORT["Generate Report<br/>coverage-report.json"]
+
+    REPORT --> OUTPUT_JSON["Output: JSON Report"]
+    OUTPUT_JSON --> INTEGRATION
+
+    subgraph Integrations["Integration Points"]
+        INTEGRATION["Available for:"]
+        INTEGRATION --> CLI_INT["scry-node deploy<br/>Auto-attach to build"]
+        INTEGRATION --> CI_INT["GitHub Actions<br/>Quality gate enforcement"]
+        INTEGRATION --> DASH_INT["Dashboard display<br/>Coverage trends"]
+    end
+
+    classDef start fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef metric fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef decision fill:#9013FE,stroke:#6D0EBE,color:#fff
+    classDef output fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef integration fill:#F8E71C,stroke:#C4B816,color:#333
+
+    class START start
+    class SCAN,DETECT,ANALYZE_COV,SUMMARY,RESULT,DIFF,REPORT process
+    class COMP_COV,PROP_COV,VARIANT_COV,PASS_RATE metric
+    class GATE,CHECK_COMP,CHECK_PROP,CHECK_VARIANT,CHECK_PASS,GIT_CHECK decision
+    class OUTPUT_JSON output
+    class INTEGRATION,CLI_INT,CI_INT,DASH_INT integration

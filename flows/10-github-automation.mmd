@@ -1,0 +1,63 @@
+---
+title: scry-ops — GitHub Automation & Orchestration
+---
+flowchart TD
+    subgraph IssueFlow["Issue-Driven Orchestration"]
+        ISSUE(["New issue created<br/>or labeled in scry-ops"])
+        ISSUE --> CHECK_LABEL{"Has 'claude'<br/>or 'codex' label?"}
+        CHECK_LABEL -- "No" --> SKIP(["No automation triggered"])
+        CHECK_LABEL -- "Yes" --> PARSE_LABELS["Parse service labels<br/>from issue"]
+
+        PARSE_LABELS --> REPO_MAP["Read repo-map.yml<br/>Map labels → repos"]
+        REPO_MAP --> CHECKOUT["Checkout matching service repos<br/>into services/ directory"]
+        CHECKOUT --> AGENT["Launch Claude/Codex agent<br/>with all checked-out services"]
+        AGENT --> EDIT["Agent edits files<br/>across multiple services"]
+    end
+
+    subgraph AgentWork["Agent Execution"]
+        EDIT --> READ_CLAUDE["Read CLAUDE.md files<br/>Root + per-service"]
+        READ_CLAUDE --> SURVEY["Survey all checked-out services<br/>Identify shared interfaces"]
+        SURVEY --> IMPLEMENT["Implement changes<br/>Following dependency order:<br/>1. upload-service<br/>2. build-processing<br/>3. cdn-service<br/>4. dashboard<br/>5. scry-node<br/>6. sbcov<br/>7. search-api"]
+        IMPLEMENT --> TEST["Run tests per service<br/>npm install && npm test"]
+    end
+
+    subgraph PushBack["Push-Back Workflow"]
+        TEST --> PUSH["Push changes to<br/>individual service repos"]
+        PUSH --> CREATE_PRS["Create PRs in each<br/>modified service repo"]
+        CREATE_PRS --> LINK["Post PR links on<br/>orchestrator issue"]
+        LINK --> BOARD["Move issue to<br/>'In Review' on project board"]
+    end
+
+    subgraph MetadataSync["Service Metadata Sync"]
+        SYNC_TRIGGER(["sync-service-metadata.yml triggered"])
+        SYNC_TRIGGER --> PARSE_MAP["Parse repo-map.yml"]
+        PARSE_MAP --> SYNC_LABELS["Sync service labels<br/>to scry-ops repo"]
+        SYNC_LABELS --> SYNC_FIELDS["Sync 'Service' field options<br/>to GitHub Project V2"]
+    end
+
+    subgraph DependencyDetection["Dependency Auto-Detection"]
+        DEP_TRIGGER(["Issue labeled with<br/>a service label"])
+        DEP_TRIGGER --> DEP_SCRIPT["Run list-service-dependencies.sh"]
+        DEP_SCRIPT --> DEP_MAP["Check repo-map.yml for<br/>service dependencies"]
+        DEP_MAP --> AUTO_LABEL["Auto-apply dependent<br/>service labels to issue"]
+    end
+
+    subgraph RepoMap["repo-map.yml Structure"]
+        MAP["Service definitions:<br/>- name: upload-service<br/>  repo: scry-storybook-upload-service<br/>  label: upload-service<br/>  path: services/scry-storybook-upload-service"]
+    end
+
+    REPO_MAP -.-> MAP
+
+    classDef trigger fill:#4A90D9,stroke:#2E6BA6,color:#fff
+    classDef process fill:#F5A623,stroke:#D4891A,color:#fff
+    classDef decision fill:#9013FE,stroke:#6D0EBE,color:#fff
+    classDef agent fill:#50E3C2,stroke:#3CB09A,color:#333
+    classDef output fill:#7ED321,stroke:#5EA018,color:#fff
+    classDef config fill:#F8E71C,stroke:#C4B816,color:#333
+
+    class ISSUE,SYNC_TRIGGER,DEP_TRIGGER trigger
+    class PARSE_LABELS,REPO_MAP,CHECKOUT,PARSE_MAP,SYNC_LABELS,SYNC_FIELDS,DEP_SCRIPT,DEP_MAP process
+    class CHECK_LABEL decision
+    class AGENT,EDIT,READ_CLAUDE,SURVEY,IMPLEMENT,TEST agent
+    class PUSH,CREATE_PRS,LINK,BOARD,AUTO_LABEL output
+    class MAP config
