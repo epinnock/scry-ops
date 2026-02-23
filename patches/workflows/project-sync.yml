@@ -1,0 +1,371 @@
+name: Sync to GitHub Project
+
+on:
+  issues:
+    types: [opened, labeled, closed, reopened]
+  pull_request:
+    types: [opened, closed, reopened]
+
+permissions:
+  issues: read
+  pull-requests: read
+  contents: read
+
+env:
+  # Replace with your actual project number after creating it
+  # Find it in the URL: https://github.com/users/epinnock/projects/NUMBER
+  PROJECT_NUMBER: "1"
+  PROJECT_OWNER: "epinnock"
+
+jobs:
+  sync-issue:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts
+            repo-map.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Add issue to project
+        if: github.event.action == 'opened' || github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          # Get project ID
+          PROJECT_ID=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" \
+            --jq '.data.user.projectV2.id')
+
+          if [ -z "$PROJECT_ID" ]; then
+            echo "Project not found, skipping"
+            exit 0
+          fi
+
+          # Add issue to project (idempotent — won't duplicate)
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id')
+
+          echo "Added issue #${{ github.event.issue.number }} to project (item: $ITEM_ID)"
+
+      - name: Set service field from labels
+        if: github.event.action == 'opened' || github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          # Map issue labels to the Service custom field
+          LABELS='${{ toJSON(github.event.issue.labels.*.name) }}'
+          SERVICE_LABELS=$(bash scripts/list-services.sh | awk -F'\t' '{print $3}')
+
+          # Determine primary service from labels
+          SERVICE=""
+          for label in $SERVICE_LABELS; do
+            if echo "$LABELS" | grep -q "\"$label\""; then
+              SERVICE="$label"
+              break
+            fi
+          done
+
+          if [ -z "$SERVICE" ]; then
+            echo "No service label found, skipping field update"
+            exit 0
+          fi
+
+          echo "Setting Service field to: $SERVICE"
+
+          # Ensure the Service option exists before setting it on the project item.
+          if ! bash scripts/sync-service-metadata.sh --project-only --service "$SERVICE"; then
+            echo "Warning: failed to sync project option for '$SERVICE'; proceeding with existing options."
+          fi
+
+          # Get project ID and field ID
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Service") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}")
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r --arg svc "$SERVICE" '.data.user.projectV2.field.options[] | select(.name == $svc) | .id')
+
+          if [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ]; then
+            echo "Service option '$SERVICE' not found in project field, skipping"
+            exit 0
+          fi
+
+          # Get the item ID for this issue
+          ITEM_ID=$(gh api graphql -f query='
+            query($projectId: ID!, $contentId: ID!) {
+              node(id: $projectId) {
+                ... on ProjectV2 {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      content {
+                        ... on Issue { id }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" \
+            --jq ".data.node.items.nodes[] | select(.content.id == \"${{ github.event.issue.node_id }}\") | .id")
+
+          if [ -n "$ITEM_ID" ]; then
+            gh api graphql -f query='
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId
+                  itemId: $itemId
+                  fieldId: $fieldId
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID"
+
+            echo "Set Service=$SERVICE on item $ITEM_ID"
+          fi
+
+      - name: Move issue to Done when closed
+        if: github.event.action == 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Status") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" 2>/dev/null) || exit 0
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.options[] | select(.name == "Done") | .id')
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+          [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ] && exit 0
+
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID" 2>/dev/null || true
+
+          echo "Moved issue #${{ github.event.issue.number }} to Done"
+
+      - name: Move issue to Todo when reopened
+        if: github.event.action == 'reopened'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Status") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" 2>/dev/null) || exit 0
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.options[] | select(.name == "Todo") | .id')
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+          [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ] && exit 0
+
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.issue.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID" 2>/dev/null || true
+
+          echo "Moved issue #${{ github.event.issue.number }} to Todo"
+
+  sync-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add PR to project
+        if: github.event.action == 'opened'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          PROJECT_ID=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" \
+            --jq '.data.user.projectV2.id' 2>/dev/null) || exit 0
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.pull_request.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          echo "Added PR #${{ github.event.pull_request.number }} to project (item: $ITEM_ID)"
+
+      - name: Move merged PR to Done
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Status") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" 2>/dev/null) || exit 0
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.options[] | select(.name == "Done") | .id')
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+          [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ] && exit 0
+
+          # Add the PR to the project (idempotent) and get item ID
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.pull_request.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID" 2>/dev/null || true
+
+          echo "Moved merged PR #${{ github.event.pull_request.number }} to Done"
+
+      - name: Move reopened PR to In Review
+        if: github.event.action == 'reopened'
+        env:
+          GH_TOKEN: ${{ secrets.CROSS_REPO_PAT }}
+        run: |
+          PROJECT_DATA=$(gh api graphql -f query='
+            query($owner: String!, $number: Int!) {
+              user(login: $owner) {
+                projectV2(number: $number) {
+                  id
+                  field(name: "Status") {
+                    ... on ProjectV2SingleSelectField {
+                      id
+                      options { id name }
+                    }
+                  }
+                }
+              }
+            }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" 2>/dev/null) || exit 0
+
+          PROJECT_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.id')
+          FIELD_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.id')
+          OPTION_ID=$(echo "$PROJECT_DATA" | jq -r '.data.user.projectV2.field.options[] | select(.name == "In Review") | .id')
+
+          [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ] && exit 0
+          [ -z "$OPTION_ID" ] || [ "$OPTION_ID" = "null" ] && exit 0
+
+          ITEM_ID=$(gh api graphql -f query='
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }' -f projectId="$PROJECT_ID" -f contentId="${{ github.event.pull_request.node_id }}" \
+            --jq '.data.addProjectV2ItemById.item.id' 2>/dev/null) || exit 0
+
+          gh api graphql -f query='
+            mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+              updateProjectV2ItemFieldValue(input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { singleSelectOptionId: $optionId }
+              }) { projectV2Item { id } }
+            }' -f projectId="$PROJECT_ID" -f itemId="$ITEM_ID" -f fieldId="$FIELD_ID" -f optionId="$OPTION_ID" 2>/dev/null || true
+
+          echo "Moved reopened PR #${{ github.event.pull_request.number }} to In Review"
