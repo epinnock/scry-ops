@@ -1,6 +1,6 @@
 # Screenshot Metadata ZIP — Architecture Diagrams
 
-This document contains Mermaid diagrams illustrating the current state, gaps, and proposed solutions.
+This document contains Mermaid diagrams illustrating the current state, the selected implementation (Option A), and implementation details.
 
 ---
 
@@ -38,8 +38,8 @@ flowchart TD
     R2 -->|"Range reads"| CDN
     CDN -->|"Serve files"| USER["End User Browser"]
 
-    R2 -.->|"❌ No queue message<br/>❌ No metadata ZIP"| BPS
-    BPS -.->|"❌ Never triggered"| MILVUS
+    R2 -.->|"No queue message<br/>No metadata ZIP"| BPS
+    BPS -.->|"Never triggered"| MILVUS
 
     style STORYCAP fill:#ff9999,stroke:#cc0000
     style BPS fill:#ff9999,stroke:#cc0000
@@ -72,7 +72,7 @@ graph LR
         IMG --> PNG3["..."]
     end
 
-    Current -.->|"❌ Different artifacts<br/>Cannot be the same ZIP"| Expected
+    Current -.->|"Different artifacts<br/>Cannot be the same ZIP"| Expected
 
     style Current fill:#e6f3ff,stroke:#0066cc
     style Expected fill:#fff3e6,stroke:#cc6600
@@ -80,49 +80,51 @@ graph LR
 
 ---
 
-## 3. Proposed Flow — Option A (scry-sbcov + scry-node)
+## 3. Implemented Flow — Option A (scry-sbcov + scry-node)
 
 ```mermaid
 flowchart TD
     subgraph Client["Client Side (CI / Local)"]
-        SB["Storybook Build"]
-        NODE["scry-node CLI"]
-        SBCOV["scry-sbcov<br/>(+ screenshot capture)"]
+        SB["Storybook Build<br/>(npm run build-storybook)"]
+        NODE["scry-node CLI<br/>(scry deploy --with-analysis)"]
+        SBCOV["scry-sbcov<br/>(--screenshots --output-zip)"]
     end
 
     subgraph Cloud["Cloud Services"]
-        UPLOAD["Upload Service"]
+        UPLOAD["Upload Service<br/>(Hono + CF Workers)"]
         QUEUE["CF Queue<br/>(scry-build-processing)"]
         R2["Cloudflare R2"]
         FS["Firestore"]
         CDN["CDN Service"]
         BPS["Build Processing Service"]
-        OPENAI["OpenAI Vision"]
-        JINA["Jina AI Embeddings"]
+        OPENAI["OpenAI Vision<br/>(gpt-5-mini)"]
+        JINA["Jina AI<br/>(jina-embeddings-v4)"]
         MILVUS["Milvus Vector DB"]
     end
 
     SB -->|"storybook-static/"| NODE
-    NODE -->|"invoke"| SBCOV
-    SBCOV -->|"1. Visit each story<br/>2. Capture screenshots<br/>3. Generate metadata.json<br/>4. Bundle ZIP"| SBCOV
-    SBCOV -->|"metadata-screenshots.zip"| NODE
+    NODE -->|"execSync"| SBCOV
+    SBCOV -->|"1. Parse story files (AST)<br/>2. Launch Playwright<br/>3. Visit each story iframe<br/>4. Validate rendering<br/>5. Screenshot passing stories<br/>6. Generate metadata.json<br/>7. Bundle ZIP"| SBCOV
+    SBCOV -->|"metadata-screenshots.zip<br/>+ coverage-report.json"| NODE
 
-    NODE -->|"POST /upload<br/>storybook.zip"| UPLOAD
-    NODE -->|"POST /upload-metadata<br/>metadata-screenshots.zip"| UPLOAD
+    NODE -->|"POST /upload/:project/:version<br/>(storybook.zip)"| UPLOAD
+    NODE -->|"POST /upload/:project/:version/coverage<br/>(coverage JSON)"| UPLOAD
+    NODE -->|"POST /upload/:project/:version/metadata<br/>(metadata-screenshots.zip)"| UPLOAD
 
-    UPLOAD -->|"storybook.zip"| R2
-    UPLOAD -->|"metadata-screenshots.zip"| R2
-    UPLOAD -->|"Build record"| FS
-    UPLOAD -->|"Queue message"| QUEUE
+    UPLOAD -->|"PUT {proj}/{ver}/storybook.zip"| R2
+    UPLOAD -->|"PUT {proj}/{ver}/builds/{N}/metadata-screenshots.zip"| R2
+    UPLOAD -->|"Create build record<br/>+ processingStatus: queued"| FS
+    UPLOAD -->|"send(QueueMessage)"| QUEUE
 
-    QUEUE -->|"Trigger"| BPS
-    BPS -->|"Fetch ZIP"| R2
-    BPS -->|"Screenshot inspection"| OPENAI
-    BPS -->|"Embeddings"| JINA
-    BPS -->|"Insert vectors"| MILVUS
-    BPS -->|"Update status"| FS
+    QUEUE -->|"Deliver batch"| BPS
+    BPS -->|"GET metadata-screenshots.zip"| R2
+    BPS -->|"Screenshot inspection<br/>(batches of 5)"| OPENAI
+    BPS -->|"Image + text embeddings<br/>(batches of 10)"| JINA
+    BPS -->|"Insert vectors<br/>(batches of 50)"| MILVUS
+    BPS -->|"Update processingStatus"| FS
 
     R2 -->|"Range reads"| CDN
+    CDN -->|"Serve Storybook"| USER["End User Browser"]
 
     style SBCOV fill:#99ff99,stroke:#009900
     style QUEUE fill:#99ff99,stroke:#009900
@@ -132,84 +134,118 @@ flowchart TD
 
 ---
 
-## 4. Proposed Flow — Option B (scry-node with index.json)
+## 4. Story Execution & Screenshot Sequence
 
 ```mermaid
-flowchart TD
-    subgraph Client["Client Side (CI / Local)"]
-        SB["Storybook Build"]
-        NODE["scry-node CLI"]
-        STORYCAP["storycap<br/>(existing)"]
+sequenceDiagram
+    participant SBCOV as scry-sbcov
+    participant PW as Playwright Browser
+    participant SB as Storybook iframe
+    participant FS as File System
+
+    SBCOV->>SBCOV: Parse story files via AST (ts-morph)
+    SBCOV->>SBCOV: Extract: filepath, componentName, title, location, componentPath
+    SBCOV->>PW: chromium.launch({ headless: true })
+    PW-->>SBCOV: browser context
+
+    loop For each story
+        SBCOV->>PW: page = context.newPage()
+        SBCOV->>SB: page.goto('/iframe.html?id={storyId}&viewMode=story')
+        SB-->>PW: Page loaded
+
+        SBCOV->>SB: waitForSelector('#storybook-root')
+        SBCOV->>SB: waitForTimeout(100ms) — React hydration
+
+        alt All validation checks pass
+            Note over SBCOV,SB: Existing checks (no new code):
+            SBCOV->>SB: Check [data-story-error] — none
+            SBCOV->>SB: Check .sb-errordisplay — none/hidden
+            SBCOV->>SB: Check pageError — none
+            SBCOV->>SB: Check critical console errors — none
+            SBCOV->>SB: Check play function — passed/none
+            Note over SBCOV: Story is healthy
+            SBCOV->>PW: page.screenshot({ path: '{storyId}.png' })
+            PW->>FS: Save screenshot PNG
+            SBCOV->>SBCOV: status=passed, screenshotPath set
+        else Any check fails (existing error handling)
+            Note over SBCOV: Story is broken
+            SBCOV->>SBCOV: status=failed, NO screenshot for metadata ZIP
+        end
+
+        SBCOV->>PW: page.close()
     end
 
-    subgraph Cloud["Cloud Services"]
-        UPLOAD["Upload Service"]
-        QUEUE["CF Queue"]
-        R2["Cloudflare R2"]
-        FS["Firestore"]
-        BPS["Build Processing Service"]
-        MILVUS["Milvus Vector DB"]
-    end
+    PW->>PW: browser.close()
 
-    SB -->|"storybook-static/"| NODE
-    NODE -->|"1. Read index.json<br/>2. Run storycap<br/>3. Generate metadata.json<br/>4. Bundle ZIP"| NODE
-    NODE -->|"storycap"| STORYCAP
-    STORYCAP -->|"screenshots"| NODE
-
-    NODE -->|"storybook.zip"| UPLOAD
-    NODE -->|"metadata-screenshots.zip"| UPLOAD
-
-    UPLOAD -->|"Store both ZIPs"| R2
-    UPLOAD -->|"Queue message"| QUEUE
-    UPLOAD -->|"Build record"| FS
-
-    QUEUE --> BPS
-    BPS -->|"Process"| MILVUS
-
-    style NODE fill:#99ff99,stroke:#009900
-    style QUEUE fill:#99ff99,stroke:#009900
+    SBCOV->>SBCOV: Filter: only passed stories with screenshotPath
+    SBCOV->>SBCOV: Build metadata.json array
+    SBCOV->>SBCOV: Resolve componentFilePath from imports
+    SBCOV->>FS: Write ZIP (archiver): metadata.json + images/*.png
 ```
 
 ---
 
-## 5. Proposed Flow — Option C (GitHub Actions)
+## 5. Upload & Queue Sequence
 
 ```mermaid
-flowchart TD
-    subgraph GHA["GitHub Actions Workflow"]
-        BUILD["npm run build-storybook"]
-        DEPLOY["scry deploy<br/>(storybook.zip)"]
-        SCREEN["Screenshot Metadata Action<br/>(new)"]
+sequenceDiagram
+    participant CLI as scry-node CLI
+    participant US as Upload Service
+    participant R2 as Cloudflare R2
+    participant FS as Firestore
+    participant Q as CF Queue (scry-build-processing)
+    participant BPS as Build Processing Service
+    participant AI as OpenAI + Jina
+    participant MV as Milvus
+
+    Note over CLI: Step 1: Upload Storybook build
+    CLI->>US: POST /upload/{project}/{version} (storybook.zip)
+    US->>R2: PUT {project}/{version}/storybook.zip
+    US->>FS: Create build record (buildNumber: N, status: active)
+    US-->>CLI: 201 { buildId, buildNumber: N }
+
+    Note over CLI: Step 2: Upload Coverage (optional, 5s delay)
+    CLI->>US: POST /upload/{project}/{version}/coverage (JSON)
+    US->>R2: PUT {project}/{version}/coverage-report.json
+    US->>FS: Update build with coverage summary
+    US-->>CLI: 200 { success }
+
+    Note over CLI: Step 3: Upload Metadata ZIP
+    CLI->>US: POST /upload/{project}/{version}/metadata (ZIP)
+    US->>FS: getLatestBuild(project, version) → { buildId, buildNumber: N }
+    US->>R2: PUT {project}/{version}/builds/N/metadata-screenshots.zip
+    US->>FS: Update build: processingStatus = 'queued'
+    US->>Q: send({ projectId, versionId, buildId, zipKey, timestamp })
+    US-->>CLI: 201 { success, queued: true, buildNumber: N }
+
+    Note over Q,BPS: Async processing (triggered by queue)
+    Q->>BPS: Deliver message batch
+    BPS->>FS: Update: processingStatus = 'processing'
+    BPS->>R2: GET {project}/{version}/builds/N/metadata-screenshots.zip
+    BPS->>BPS: extractZip() → metadata.json + screenshot images
+    BPS->>BPS: parseMetadata() → StoryItem[] (matched by path)
+
+    loop For each batch of 5 stories
+        BPS->>AI: OpenAI Vision (gpt-5-mini) — screenshot inspection
+        AI-->>BPS: Descriptions, tags, search queries
     end
 
-    subgraph Cloud["Cloud Services"]
-        UPLOAD["Upload Service"]
-        QUEUE["CF Queue"]
-        R2["Cloudflare R2"]
-        BPS["Build Processing"]
-        MILVUS["Milvus"]
+    BPS->>BPS: Generate searchable text from inspection results
+
+    loop For each batch of 10
+        BPS->>AI: Jina AI (jina-embeddings-v4) — image embeddings
+        AI-->>BPS: Image vectors (padded to 2048 dims)
+        BPS->>AI: Jina AI (jina-embeddings-v4) — text embeddings
+        AI-->>BPS: Text vectors (padded to 2048 dims)
     end
 
-    BUILD -->|"storybook-static/"| DEPLOY
-    BUILD -->|"storybook-static/"| SCREEN
-    DEPLOY -->|"storybook.zip"| UPLOAD
-    SCREEN -->|"1. Start local server<br/>2. Playwright screenshots<br/>3. Generate metadata<br/>4. Bundle ZIP"| SCREEN
-    SCREEN -->|"metadata-screenshots.zip"| UPLOAD
-
-    UPLOAD --> R2
-    UPLOAD --> QUEUE
-    QUEUE --> BPS
-    BPS --> MILVUS
-
-    DEPLOY -.->|"parallel"| SCREEN
-
-    style SCREEN fill:#99ff99,stroke:#009900
-    style QUEUE fill:#99ff99,stroke:#009900
+    BPS->>MV: Insert vectors (batches of 50)
+    BPS->>FS: Update: processingStatus = 'completed', processedStoryCount: X
 ```
 
 ---
 
-## 6. R2 Storage Layout — Proposed
+## 6. R2 Storage Layout
 
 ```mermaid
 graph TD
@@ -238,78 +274,52 @@ graph TD
 
 ---
 
-## 7. Queue Message Flow — Sequence Diagram
+## 7. metadata.json Schema
 
 ```mermaid
-sequenceDiagram
-    participant CLI as scry-node CLI
-    participant US as Upload Service
-    participant R2 as Cloudflare R2
-    participant FS as Firestore
-    participant Q as CF Queue
-    participant BPS as Build Processing
-    participant AI as OpenAI + Jina
-    participant MV as Milvus
+classDiagram
+    class MetadataEntry {
+        +string filepath
+        +string componentFilePath
+        +string componentName
+        +string testName
+        +string storyTitle
+        +string screenshotPath
+        +Location location
+    }
+    class Location {
+        +number startLine
+        +number endLine
+    }
+    MetadataEntry --> Location : optional
 
-    CLI->>US: POST /upload (storybook.zip)
-    US->>R2: PUT {project}/{version}/storybook.zip
-    US->>FS: Create build record (buildNumber: N)
-    US-->>CLI: 201 { buildId, buildNumber }
-
-    CLI->>US: POST /upload-metadata (metadata-screenshots.zip)
-    US->>R2: PUT {project}/{version}/builds/N/metadata-screenshots.zip
-    US->>Q: Publish { projectId, versionId, buildId, zipKey }
-    US-->>CLI: 201 { success }
-
-    Q->>BPS: Deliver message
-    BPS->>R2: GET metadata-screenshots.zip
-    BPS->>BPS: Extract ZIP (metadata.json + images)
-    BPS->>BPS: Parse metadata, match screenshots
-    BPS->>FS: Update status: processing
-
-    loop For each batch of 5 stories
-        BPS->>AI: OpenAI Vision (screenshots)
-        AI-->>BPS: Component descriptions + tags
-    end
-
-    loop For each batch of 10
-        BPS->>AI: Jina AI (image embeddings)
-        AI-->>BPS: Image vectors
-        BPS->>AI: Jina AI (text embeddings)
-        AI-->>BPS: Text vectors
-    end
-
-    BPS->>MV: Insert vectors (batches of 50)
-    BPS->>FS: Update status: completed
+    note for MetadataEntry "filepath: story file (Button.stories.tsx)\ncomponentFilePath: component (Button.tsx)\nscreenshotPath: relative to ZIP root"
 ```
 
 ---
 
-## 8. Decision Tree — Which Option to Choose
+## 8. Deploy Flow Comparison
 
 ```mermaid
-flowchart TD
-    START["Need screenshot<br/>metadata ZIP"] --> Q1{"Need rich metadata?<br/>(filepath, location)"}
+flowchart LR
+    subgraph Before["Before (Current)"]
+        direction TB
+        B1["1. resolveCoverage()"] --> B2["2. captureScreenshots()<br/>(storycap/Puppeteer)"]
+        B2 --> B3["3. analyzeStorybook()<br/>(regex parsing)"]
+        B3 --> B4["4. createMasterZip()<br/>(static + images + metadata)"]
+        B4 --> B5["5. uploadBuild()<br/>(single ZIP)"]
+    end
 
-    Q1 -->|"Yes"| Q2{"scry-sbcov already<br/>in deploy workflow?"}
-    Q1 -->|"No, basic is fine"| OPT_B["Option B<br/>scry-node + index.json"]
+    subgraph After["After (Option A)"]
+        direction TB
+        A1["1. resolveCoverage()<br/>(scry-sbcov: coverage +<br/>screenshots + metadata ZIP)"] --> A2["2. zipDirectory()<br/>(storybook static only)"]
+        A2 --> A3["3. uploadBuild()<br/>(storybook.zip +<br/>coverage +<br/>metadata ZIP)"]
+    end
 
-    Q2 -->|"Yes"| OPT_A["Option A<br/>scry-sbcov + scry-node"]
-    Q2 -->|"No"| Q3{"Want CI integration?"}
+    Before -.->|"Replaced by"| After
 
-    Q3 -->|"Yes"| OPT_C["Option C<br/>GitHub Actions"]
-    Q3 -->|"No"| OPT_E["Option E<br/>Hybrid (standalone sbcov)"]
-
-    OPT_B --> IMPL["Implement queue<br/>integration in<br/>upload-service"]
-    OPT_A --> IMPL
-    OPT_C --> IMPL
-    OPT_E --> IMPL
-
-    style OPT_A fill:#99ff99,stroke:#009900
-    style OPT_B fill:#ffffcc,stroke:#cccc00
-    style OPT_C fill:#e6f3ff,stroke:#0066cc
-    style OPT_E fill:#ffe6ff,stroke:#cc00cc
-    style IMPL fill:#ff9999,stroke:#cc0000
+    style Before fill:#fff3e6,stroke:#cc6600
+    style After fill:#e6ffe6,stroke:#009900
 ```
 
 ---
@@ -318,21 +328,29 @@ flowchart TD
 
 ```mermaid
 gantt
-    title Screenshot Metadata ZIP — Implementation Phases
+    title Screenshot Metadata ZIP — Option A Implementation
     dateFormat YYYY-MM-DD
     axisFormat %b %d
 
-    section Phase 1 (Foundation)
-    Upload service queue integration        :p1a, 2026-03-01, 5d
-    R2 path convention alignment            :p1b, 2026-03-01, 3d
-    Upload service metadata ZIP endpoint    :p1c, after p1b, 4d
+    section Phase 1a (scry-sbcov)
+    Story parser: location tracking          :p1a1, 2026-02-26, 1d
+    Story executor: screenshot capture       :p1a2, 2026-02-26, 1d
+    ZIP generator module                     :p1a3, after p1a2, 2d
+    CLI flags + config                       :p1a4, after p1a3, 1d
+    Tests                                    :p1a5, after p1a4, 1d
 
-    section Phase 2 (Generation)
-    Option B: scry-node metadata gen        :p2a, after p1c, 5d
-    OR Option A: scry-sbcov screenshots     :p2b, after p1c, 7d
+    section Phase 1b (upload-service) — parallel
+    Queue binding (wrangler.toml)            :p1b1, 2026-02-26, 1d
+    Metadata endpoint                        :p1b2, after p1b1, 2d
+    Firestore methods                        :p1b3, after p1b1, 2d
+    Tests                                    :p1b4, after p1b3, 1d
 
-    section Phase 3 (Integration)
-    End-to-end testing                      :p3a, after p2a, 3d
-    GitHub Actions workflow template        :p3b, after p3a, 3d
-    Documentation                           :p3c, after p3a, 2d
+    section Phase 2 (scry-node)
+    coverage.js: screenshot flags            :p2a, after p1a5, 1d
+    apiClient.js: uploadMetadataZip          :p2b, after p1b4, 1d
+    cli.js: replace storycap flow            :p2c, after p2b, 2d
+    Tests                                    :p2d, after p2c, 1d
+
+    section Phase 3 (Verification)
+    End-to-end integration test              :p3a, after p2d, 2d
 ```
