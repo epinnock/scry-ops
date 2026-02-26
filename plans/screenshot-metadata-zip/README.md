@@ -1,8 +1,8 @@
-# Screenshot Metadata ZIP — Discovery Plan
+# Screenshot Metadata ZIP — Plan
 
 **Issue:** #27
-**Date:** 2026-02-23
-**Status:** Discovery complete, pending decision
+**Date:** 2026-02-23 (discovery), 2026-02-25 (implementation plan)
+**Status:** Option A selected, implementation plans written
 
 ---
 
@@ -10,18 +10,29 @@
 
 The `scry-build-processing-service` expects a ZIP containing `metadata.json` + story screenshots to power the search indexing pipeline (OpenAI Vision inspection → Jina embeddings → Milvus vectors). However, **no service currently generates or uploads this ZIP**.
 
-The Storybook build ZIP uploaded by `scry-node` is a compiled static site (HTML/JS/CSS) — a fundamentally different artifact from what build-processing needs.
+**Decision:** Implement **Option A** — scry-sbcov generates the metadata+screenshots ZIP (leveraging its existing Playwright browser session and AST-based metadata), scry-node orchestrates the flow and uploads artifacts, and the upload-service stores the ZIP and enqueues processing.
 
 ---
 
 ## Documents
+
+### Discovery (completed)
 
 | File | Description |
 |------|-------------|
 | [00-current-state.md](./00-current-state.md) | Detailed analysis of how each service currently handles ZIPs, metadata, and screenshots |
 | [01-gap-analysis.md](./01-gap-analysis.md) | Five specific gaps identified between current state and required pipeline |
 | [02-options.md](./02-options.md) | Five implementation options with pros/cons, complexity, and comparison matrix |
-| [03-architecture-diagrams.md](./03-architecture-diagrams.md) | Mermaid diagrams: current state, proposed flows, R2 layout, sequence diagrams, decision tree |
+| [03-architecture-diagrams.md](./03-architecture-diagrams.md) | Mermaid diagrams: current state, proposed flows, R2 layout, sequence diagrams |
+
+### Implementation (Option A)
+
+| File | Description |
+|------|-------------|
+| [04-implementation-plan.md](./04-implementation-plan.md) | Master implementation plan: architecture, design decisions, diagrams, verification |
+| [05-impl-scry-sbcov.md](./05-impl-scry-sbcov.md) | scry-sbcov: screenshot capture, ZIP generation, location tracking, componentFilePath |
+| [06-impl-upload-service.md](./06-impl-upload-service.md) | upload-service: queue binding, metadata endpoint, Firestore methods |
+| [07-impl-scry-node.md](./07-impl-scry-node.md) | scry-node: replace storycap flow, upload metadata ZIP |
 
 ---
 
@@ -29,31 +40,30 @@ The Storybook build ZIP uploaded by `scry-node` is a compiled static site (HTML/
 
 1. **Two different ZIPs needed**: The Storybook build ZIP (for CDN) and the metadata-screenshots ZIP (for search indexing) are separate artifacts
 2. **Queue integration missing**: Upload service has no code to publish queue messages to trigger build-processing
-3. **R2 path mismatch**: Upload service uses `{project}/{version}/storybook.zip`; documentation says `{project}/{version}/builds/{buildNumber}/storybook.zip`
-4. **scry-sbcov has the richest metadata**: It's the only tool that knows filepath, componentName, location from AST parsing
-5. **Existing story-capture unification plan**: The `plans/story-capture-feature/` documents already plan to merge storycap + scry-sbcov into a unified `captureStory()` primitive
+3. **scry-sbcov has the richest metadata**: It's the only tool that knows filepath, componentName, location from AST parsing
+4. **scry-node already generates partial metadata**: The `--with-analysis` flag already creates metadata.json + bundles screenshots, but the format doesn't match build-processing and there's no queue trigger
+5. **Build-processing is fully implemented**: 44 tests pass, pipeline works end-to-end — it just has no upstream producer
 
 ---
 
-## Recommended Path
+## Design Decisions
 
-| Phase | Approach | Description |
-|-------|----------|-------------|
-| **Short-term** | Option B | scry-node generates basic metadata from `index.json` + existing storycap screenshots |
-| **Medium-term** | Option A | scry-sbcov generates full metadata + screenshots via unified capture service |
-| **Long-term** | Option C | Publish a reusable GitHub Action wrapping the scry-sbcov approach |
-
-**Regardless of option chosen**, the upload-service needs:
-- Queue producer binding and publish code
-- Metadata ZIP upload endpoint (or extension of existing upload)
-- R2 path convention decision
+1. **Option A over Option B**: scry-sbcov has richer metadata (AST-based), already visits every story via Playwright, and storycap is planned for deprecation
+2. **Replace storycap flow**: When `--with-analysis` is used, scry-sbcov replaces storycap + analyzeStorybook() — single browser session instead of two
+3. **Only screenshot passing stories**: Broken stories are excluded from the metadata ZIP to prevent polluting the search index
+4. **Require existing build**: Metadata upload fails if storybook.zip hasn't been uploaded first
+5. **New metadata fields**: `location` (AST line numbers) and `componentFilePath` (resolved component file) added for richer data
+6. **Queue binding optional**: Upload-service works with or without the queue configured
 
 ---
 
-## Next Steps
+## Implementation Order
 
-1. Decide which generation option to pursue first (A, B, C, or E)
-2. Implement queue integration in upload-service
-3. Align R2 path conventions across services
-4. Implement chosen generation approach
-5. End-to-end test the full pipeline
+| Phase | Service | Can parallelize? |
+|-------|---------|-----------------|
+| 1a | scry-sbcov: screenshot capture + ZIP generation | Yes (with 1b) |
+| 1b | upload-service: queue binding + metadata endpoint | Yes (with 1a) |
+| 2 | scry-node: wire up scry-sbcov + upload metadata | After 1a + 1b |
+| 3 | End-to-end verification | After all |
+
+**build-processing-service requires no code changes** — verified compatible with all produced formats.
