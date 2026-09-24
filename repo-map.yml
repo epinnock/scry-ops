@@ -99,7 +99,7 @@ services:
   scry-management:
     repo: epinnock/scry-management
     label: management
-    description: Ops - promote.sh, smoke gates, synthetics/feedback/alerts Workers, runner pool, feature folders, architecture doc
+    description: Ops - promote.sh, smoke gates, synthetics, runner pool, architecture doc
     stack: [bash, python, cloudflare-workers, github-actions]
     depends_on: []
 
