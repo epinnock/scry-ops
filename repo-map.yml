@@ -1,3 +1,8 @@
+# Repo index. Canonical architecture (services, hostnames, data stores, flows):
+#   https://github.com/epinnock/scry-management/blob/main/docs/architecture.md
+# Updated 2026-09-24. Repos marked scryorg/ moved to the scryorg GitHub org that day;
+# the old epinnock/ URLs redirect.
+
 services:
   scry-ops:
     repo: epinnock/scry-ops
@@ -7,7 +12,7 @@ services:
     depends_on: []
 
   scry-storybook-upload-service:
-    repo: epinnock/scry-storybook-upload-service
+    repo: scryorg/scry-storybook-upload-service
     label: upload-service
     description: Backend API for Storybook uploads
     stack: [typescript, hono, cloudflare-workers]
@@ -19,23 +24,24 @@ services:
     description: CDN for serving deployed Storybooks
     stack: [typescript, hono, cloudflare-workers]
     depends_on: [upload-service, r2, firestore, kv]
+    note: checkout origin is still epinnock/scry-remote-viewer; prod Worker owns the *.scrymore.com/* route
 
   scry-developer-dashboard:
     repo: epinnock/scry-developer-dashboard
     label: dashboard
-    description: Web dashboard for project management
-    stack: [nextjs, typescript, firebase]
-    depends_on: [upload-service, firestore, firebase-auth]
+    description: Web dashboard (projects, Figma links, diffs, issues, credits, KPI) and API for the plugin
+    stack: [nextjs, typescript, firebase, vercel]
+    depends_on: [upload-service, diff-service, build-processing, search-api, firestore, firebase-auth, r2, posthog]
 
   scry-node:
-    repo: epinnock/scry-node
+    repo: scryorg/scry-node
     label: scry-node
     description: CLI tool for deploying Storybooks
     stack: [nodejs, javascript]
     depends_on: [upload-service]
 
   scry-sbcov:
-    repo: epinnock/scry-sbcov
+    repo: scryorg/scry-sbcov
     label: sbcov
     description: Storybook coverage analysis tool
     stack: [nodejs, typescript]
@@ -44,9 +50,9 @@ services:
   scry-nextjs:
     repo: epinnock/scry-nextjs
     label: search-api
-    description: Multimodal search API for components
-    stack: [nextjs, typescript, milvus]
-    depends_on: [r2]
+    description: Multimodal search API for components (Jina via AI Gateway, credits charge/refund)
+    stack: [nextjs, typescript, milvus, vercel]
+    depends_on: [r2, milvus, diff-service, ai-gateway, telemetry-queue]
 
   scry-landing-page:
     repo: epinnock/scry-landing-page
@@ -58,16 +64,44 @@ services:
   scry-link:
     repo: epinnock/scry-link
     label: scry-link
-    description: Figma plugin for linking components to stories
-    stack: [typescript]
-    depends_on: []
+    description: Figma plugin (Scry Link) - link layers to stories, Design Sync diffs, component requests
+    stack: [typescript, figma-plugin]
+    depends_on: [dashboard, posthog, sentry]
 
   scry-build-processing-service:
-    repo: epinnock/scry-build-processing-service
+    repo: scryorg/scry-build-processing-service
     label: build-processing
-    description: Async build processing pipeline (LOR, embeddings, vector DB)
-    stack: [typescript, hono, cloudflare-workers, cloudflare-queues]
-    depends_on: [upload-service, r2, firestore, milvus]
+    description: Async build processing pipeline (Workflow, screenshots, embeddings, vector DB, retention)
+    stack: [typescript, hono, cloudflare-workers, cloudflare-queues, cloudflare-workflows]
+    depends_on: [upload-service, r2, firestore, milvus, diff-service, ai-gateway, telemetry-queue]
+
+  scry-mcp:
+    repo: epinnock/scry-mcp
+    label: scry-mcp
+    description: Remote MCP server (mcp.scrymore.com/mcp) - component search, screenshots, generate_image
+    stack: [typescript, cloudflare-workers, durable-objects, mcp-sdk]
+    depends_on: [search-api, firebase-auth, r2, kv, diff-service, ai-gateway, telemetry-queue]
+
+  scry-diff-service:
+    repo: scryorg/scry-diff-service
+    label: diff-service
+    description: Figma <-> Storybook visual diff (tiers Basic/Plus), issues, AI credits ledger, telemetry consumer
+    stack: [typescript, hono, cloudflare-workers, cloudflare-workflows, d1, python-workers]
+    depends_on: [d1, r2, ai-gateway, telemetry-queue, langfuse]
+
+  scry-docs:
+    repo: epinnock/scry-docs
+    label: docs
+    description: Public docs site docs.scrymore.com (VitePress on Vercel, branch master)
+    stack: [vitepress, vercel]
+    depends_on: []
+
+  scry-management:
+    repo: epinnock/scry-management
+    label: management
+    description: Ops - promote.sh, smoke gates, synthetics, runner pool, architecture doc
+    stack: [bash, python, cloudflare-workers, github-actions]
+    depends_on: []
 
 infrastructure:
   r2:
@@ -93,3 +127,31 @@ infrastructure:
   cloudflare-queues:
     provider: cloudflare
     description: Async message queue for build processing pipeline
+
+  d1:
+    provider: cloudflare
+    description: scry-diff-db-{staging,production} (diffs, issues, metering, credits ledger); synthetics + feedback DBs
+
+  cloudflare-workflows:
+    provider: cloudflare
+    description: Durable steps for build processing and diff runs (retries/backoff)
+
+  ai-gateway:
+    provider: cloudflare
+    description: Gateways scry-stage / scry-prod in front of OpenRouter, OpenAI, Jina, Gemini (metadata-only logs, 90d)
+
+  telemetry-queue:
+    provider: cloudflare
+    description: scry-telemetry-{staging,production} + DLQ; diff-service consumer archives to R2 then sends to Langfuse
+
+  langfuse:
+    provider: langfuse-cloud
+    description: LLM traces (Cloud Hobby, projects scry-stage / scry-prod)
+
+  posthog:
+    provider: posthog
+    description: Product analytics for dashboard + plugin via dashboard /ingest proxy
+
+  sentry:
+    provider: sentry
+    description: Errors only (dashboard, plugin, workers)

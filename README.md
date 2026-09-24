@@ -57,15 +57,21 @@ Each label maps to a service repo. Adding a label to an issue tells the workflow
 | Label | Repository | Description |
 |-------|-----------|-------------|
 | `scry-ops` | epinnock/scry-ops | Orchestrator workflows, plans, and scripts |
-| `upload-service` | epinnock/scry-storybook-upload-service | Backend API for Storybook uploads |
-| `build-processing` | epinnock/scry-build-processing-service | Async build processing pipeline (LOR, embeddings, vector DB) |
+| `upload-service` | scryorg/scry-storybook-upload-service | Backend API for Storybook uploads |
+| `build-processing` | scryorg/scry-build-processing-service | Async build processing pipeline (LOR, embeddings, vector DB) |
 | `cdn-service` | epinnock/scry-cdn-service | CDN for serving deployed Storybooks |
 | `dashboard` | epinnock/scry-developer-dashboard | Web dashboard for project management |
-| `scry-node` | epinnock/scry-node | CLI tool for deploying Storybooks |
-| `sbcov` | epinnock/scry-sbcov | Storybook coverage analysis tool |
+| `scry-node` | scryorg/scry-node | CLI tool for deploying Storybooks |
+| `sbcov` | scryorg/scry-sbcov | Storybook coverage analysis tool |
 | `search-api` | epinnock/scry-nextjs | Multimodal search API |
 | `landing-page` | epinnock/scry-landing-page | Marketing landing page |
 | `scry-link` | epinnock/scry-link | Figma plugin |
+| `scry-mcp` | epinnock/scry-mcp | Remote MCP server |
+| `diff-service` | scryorg/scry-diff-service | Figma ↔ Storybook diffs, issues, AI credits ledger |
+| `docs` | epinnock/scry-docs | Public docs site |
+| `management` | epinnock/scry-management | Ops scripts, promote.sh, synthetics |
+
+System architecture (hostnames, data stores, request flows): [scry-management/docs/architecture.md](https://github.com/epinnock/scry-management/blob/main/docs/architecture.md). Several repos moved to the `scryorg` org on 2026-09-24; old `epinnock/` URLs redirect.
 
 ## Agent Labels
 
@@ -214,7 +220,7 @@ bash scripts/list-services.sh /path/to/repo-map.yml
 **Example**:
 ```
 scry-ops    epinnock/scry-ops    scry-ops    Orchestrator workflows, plans, and automation scripts
-upload-service    epinnock/scry-storybook-upload-service    upload-service    Backend API for Storybook uploads
+upload-service    scryorg/scry-storybook-upload-service     upload-service    Backend API for Storybook uploads
 ```
 
 This script is used by other automation scripts to parse the service registry.

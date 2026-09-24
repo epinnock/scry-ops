@@ -85,7 +85,7 @@ All services share this R2 storage convention:
 ```
 CLI (scry-node) → Upload Service → R2 (storage) + Firestore (metadata)
                                         ↓ (Queue message)
-                  Build Processing Service → OpenAI + Jina → Milvus (vector DB)
+                  Build Processing Service → OpenAI + Jina (via AI Gateway) → Milvus (vector DB)
                                         ↓
 CDN Service ← reads from R2 + Firestore
                                         ↓
@@ -94,9 +94,11 @@ Search API ← queries Milvus for component search
 ```
 
 ### Environments
-- **Production**: `view.scrymore.com` (CDN), `dashboard.scrymore.com` (Dashboard)
-- **Staging**: `scry-cdn-service-dev.scrymore.workers.dev`
-- **Firebase**: `scry-production` (prod), `scry-staging` (staging)
+- **Production**: `<service>.scrymore.com` — upload, build, view (CDN), search, mcp, diff, dashboard; docs at `docs.scrymore.com`
+- **Staging**: `<service>-stage.scrymore.com` (search-stage and dashboard-stage are Vercel-protected previews)
+- **Firebase**: `scry-dev-dashboard` (prod), `scry-dev-dashboard-stage` (staging)
+- Flow: PR → `stage` branch (auto-deploys stage) → `scry-management/promote.sh` fast-forwards `stage` → `main` (production)
+- Full picture (data stores, diff tiers, AI credits, telemetry, CI/CD, security): `scry-management/docs/architecture.md`
 
 ## Rules
 - All services use TypeScript
